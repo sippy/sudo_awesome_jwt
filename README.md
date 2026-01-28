@@ -1,6 +1,6 @@
-# sudo-jwt-approval (minimal)
+# sudo-awesome-jwt (minimal)
 
-Minimal sudo approval plugin that enforces a short-lived JWT stored in a file. This runs after sudoers and can further restrict access.
+Minimal sudo approval + policy plugin that enforces a short-lived JWT stored in a file. The approval plugin runs after sudoers and can further restrict access, while the policy plugin can replace sudoers entirely.
 
 ## Build
 
@@ -8,31 +8,40 @@ Minimal sudo approval plugin that enforces a short-lived JWT stored in a file. T
 make
 ```
 
-Build output: `sudo_jwt_approval.so`
+Build output: `sudo_awesome_jwt.so`
 
 Dependencies:
 - sudo development headers (`sudo_plugin.h`)
 - OpenSSL (`libcrypto`)
 
+Build notes:
+- Symbols are hidden by default (`-fvisibility=hidden`); `exports.map` exports `sudo_jwt_approval` and `sudo_jwt_policy` via a linker version script.
+- To link against static OpenSSL (if static libs are installed), build with:
+  ```
+  make OPENSSL_STATIC=1
+  ```
+  You can also override `OPENSSL_LIBS` directly if your platform needs different flags.
+
 ## Install (example)
 
 ```sh
-sudo install -m 0755 sudo_jwt_approval.so /usr/local/libexec/sudo/
-sudo install -m 0644 sudo-jwt-policy.conf /etc/sudo-jwt-policy.conf
+sudo install -m 0755 sudo_awesome_jwt.so /usr/local/libexec/sudo/
+sudo install -m 0644 sudo_awesome_jwt.conf /usr/local/etc/sudo_awesome_jwt.conf
 ```
 
 Configure sudoers as the policy plugin and add the approval plugin in `/etc/sudo.conf`:
 
 ```
 Plugin sudoers_policy sudoers.so
-Plugin sudo_jwt_approval sudo_jwt_approval.so config=/etc/sudo-jwt-policy.conf
+Plugin sudo_jwt_approval sudo_awesome_jwt.so config=/usr/local/etc/sudo_awesome_jwt.conf
 ```
 
 The approval plugin runs after sudoers. It can only restrict what sudoers already allows.
+The shared object also exports a policy plugin symbol (`sudo_jwt_policy`) if you want to use JWT as the primary policy plugin instead.
 
 ## Config
 
-See `sudo-jwt-policy.conf` for a minimal example. Required keys:
+See `sudo_awesome_jwt.conf` for a minimal example. Required keys:
 
 - `token_file`
 - `public_key`

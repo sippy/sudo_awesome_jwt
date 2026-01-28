@@ -1,14 +1,22 @@
 CC ?= cc
 CFLAGS ?= -O2
-CFLAGS += -fPIC -Wall -Wextra -Werror -flto
+CFLAGS += -fPIC -Wall -Wextra -Werror -flto -fvisibility=hidden
 CPPFLAGS ?=
 CPPFLAGS += -I/usr/local/include
 LDFLAGS ?=
 LDFLAGS += -shared
-LDLIBS ?= -lcrypto
+EXPORTS_FILE ?= exports.map
+LDFLAGS += -Wl,--version-script=$(EXPORTS_FILE)
+OPENSSL_STATIC ?= 0
+OPENSSL_LIBS ?= -lcrypto
+.if ${OPENSSL_STATIC} == 1
+OPENSSL_LIBS = -Wl,-Bstatic -lcrypto -Wl,-Bdynamic
+.endif
+LDLIBS ?=
+LDLIBS += $(OPENSSL_LIBS)
 
-SRC := src/sudo_jwt_policy.c src/jsmn.c
-OUT := sudo_jwt_approval.so
+SRC := src/sudo_jwt_common.c src/sudo_jwt_policy.c src/sudo_jwt_approval.c src/jsmn.c
+OUT := sudo_awesome_jwt.so
 
 all: $(OUT)
 
