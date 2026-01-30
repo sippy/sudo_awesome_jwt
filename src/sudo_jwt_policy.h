@@ -4,6 +4,5 @@
 #include <sudo_plugin.h>
 
 extern struct policy_plugin policy;
-extern struct policy_plugin sudoers_policy;
 
 #endif

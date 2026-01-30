@@ -1,5 +1,7 @@
 #include <pwd.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sudo_plugin.h>
 
 #include "sudo_jwt_common.h"
@@ -13,7 +15,14 @@ static int policy_open(unsigned int version, sudo_conv_t conversation,
     (void)settings;
     (void)user_env;
 
-    return jwt_common_open(version, sudo_plugin_printf, user_info, plugin_options, errstr);
+    int rc = jwt_common_open(version, sudo_plugin_printf, user_info, plugin_options, errstr);
+    if (rc != 1 && errstr && *errstr) {
+        const char *dbg = getenv("SUDO_AWESOME_JWT_DEBUG");
+        if (dbg && *dbg && *dbg != '0') {
+            fprintf(stderr, "sudo-awesome-jwt-policy: %s\n", *errstr);
+        }
+    }
+    return rc;
 }
 
 static void policy_close(int exit_status, int error) {
@@ -42,7 +51,14 @@ static int policy_check(int argc, char * const argv[], char *env_add[],
         *user_env_out = NULL;
     }
 
-    return jwt_common_check(NULL, argv, errstr, "sudo-awesome-jwt-policy");
+    int rc = jwt_common_check(NULL, argv, errstr, "sudo-awesome-jwt-policy");
+    if (rc != 1 && errstr && *errstr) {
+        const char *dbg = getenv("SUDO_AWESOME_JWT_DEBUG");
+        if (dbg && *dbg && *dbg != '0') {
+            fprintf(stderr, "sudo-awesome-jwt-policy: %s\n", *errstr);
+        }
+    }
+    return rc;
 }
 
 static int policy_list(int argc, char * const argv[], int verbose, const char *user, const char **errstr) {
@@ -71,22 +87,6 @@ static int policy_init_session(struct passwd *pwd, char **user_env_out[], const 
 }
 
 __attribute__((visibility("default"))) struct policy_plugin policy = {
-    SUDO_POLICY_PLUGIN,
-    SUDO_API_VERSION,
-    policy_open,
-    policy_close,
-    policy_show_version,
-    policy_check,
-    policy_list,
-    policy_validate,
-    policy_invalidate,
-    policy_init_session,
-    NULL,
-    NULL,
-    NULL
-};
-
-__attribute__((visibility("default"))) struct policy_plugin sudoers_policy = {
     SUDO_POLICY_PLUGIN,
     SUDO_API_VERSION,
     policy_open,
