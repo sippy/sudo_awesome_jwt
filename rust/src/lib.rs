@@ -148,6 +148,8 @@ fn build_command_info(argv: *const *const c_char) -> (Vec<CString>, Vec<usize>) 
     entries.push(CString::new(format!("command={cmd}")).unwrap());
     entries.push(CString::new(format!("command_path={cmd}")).unwrap());
     entries.push(CString::new("runas_user=root").unwrap());
+    entries.push(CString::new("runas_uid=0").unwrap());
+    entries.push(CString::new("runas_gid=0").unwrap());
     entries.push(CString::new(format!("cwd={cwd}")).unwrap());
     let mut ptrs: Vec<usize> = entries.iter().map(|c| c.as_ptr() as usize).collect();
     ptrs.push(0);

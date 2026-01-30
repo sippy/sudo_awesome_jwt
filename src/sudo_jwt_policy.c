@@ -58,17 +58,19 @@ static char **build_command_info(char * const argv[]) {
         cwd = "/";
     }
 
-    char **info = calloc(5, sizeof(char *));
+    char **info = calloc(7, sizeof(char *));
     if (!info) {
         return NULL;
     }
     info[0] = dup_kv("command", cmd);
     info[1] = dup_kv("command_path", cmd);
     info[2] = dup_kv("runas_user", "root");
-    info[3] = dup_kv("cwd", cwd);
-    info[4] = NULL;
+    info[3] = dup_kv("runas_uid", "0");
+    info[4] = dup_kv("runas_gid", "0");
+    info[5] = dup_kv("cwd", cwd);
+    info[6] = NULL;
 
-    for (size_t i = 0; i < 4; i++) {
+    for (size_t i = 0; i < 6; i++) {
         if (!info[i]) {
             free_command_info(info);
             return NULL;
