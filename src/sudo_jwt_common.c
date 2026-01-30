@@ -19,13 +19,6 @@
 #include "jsmn.h"
 #include "sudo_jwt_common.h"
 
-#define DEFAULT_CONFIG_PATH "/usr/local/etc/sudo_awesome_jwt.conf"
-#define DEFAULT_SCOPE "sudo"
-#define MAX_TOKEN_BYTES 16384
-#define CLOCK_SKEW_SECONDS 60
-#define MAX_AUDIENCE_BYTES 1024
-#define MAX_ALLOWLIST_BYTES 4096
-
 struct policy_config {
     char *token_file;
     char *public_key;
@@ -49,11 +42,13 @@ static char *g_tty;
 static char *g_user;
 static uid_t g_uid;
 static int g_uid_valid;
+static int parse_bool(const char *s, int *out);
 
 static int read_text_file(const char *path, size_t max_len, char **out, const char **errstr);
 static int read_allowlist_file(const char *path, size_t max_len, char **out, const char **errstr);
 static int add_allowlist_entries(struct policy_config *cfg, char *list, int allow_expand, const char **errstr);
 static char *expand_vars(const char *input);
+static void plugin_log_v(int msg_type, const char *fmt, va_list ap);
 static void plugin_log(int msg_type, const char *fmt, ...);
 
 static int g_debug_override;
@@ -69,23 +64,53 @@ static void debug_log(const char *fmt, ...) {
     }
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    plugin_log_v(SUDO_CONV_ERROR_MSG, fmt, ap);
     va_end(ap);
 }
 
-static void plugin_log(int msg_type, const char *fmt, ...) {
+static void plugin_log_v(int msg_type, const char *fmt, va_list ap) {
     if (!g_printf) {
         return;
     }
 
-    va_list ap;
     char buf[1024];
-
-    va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-
     g_printf(msg_type, "%s", buf);
+}
+
+static void plugin_log(int msg_type, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    plugin_log_v(msg_type, fmt, ap);
+    va_end(ap);
+}
+
+void jwt_common_parse_debug_options(char * const plugin_options[]) {
+    g_debug_override = 0;
+    if (!plugin_options) {
+        return;
+    }
+    for (size_t i = 0; plugin_options[i]; i++) {
+        const char *opt = plugin_options[i];
+        if (strncmp(opt, "debug=", 6) == 0) {
+            int dbg_val = 0;
+            if (parse_bool(opt + 6, &dbg_val) == 0) {
+                g_debug_override = dbg_val;
+            }
+        } else if (strcmp(opt, "debug") == 0) {
+            g_debug_override = 1;
+        }
+    }
+}
+
+void jwt_common_debug(const char *fmt, ...) {
+    if (!debug_enabled()) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    plugin_log_v(SUDO_CONV_ERROR_MSG, fmt, ap);
+    va_end(ap);
 }
 
 static void *xmalloc(size_t size) {
@@ -1326,28 +1351,27 @@ int jwt_common_open(unsigned int version, sudo_printf_t sudo_plugin_printf,
         *err_out = "incompatible sudo plugin API";
         return -1;
     }
+    if (SUDO_API_VERSION_GET_MINOR(version) != SUDO_API_VERSION_MINOR) {
+        debug_log("%s: warning: sudo API minor mismatch (expected %u, got %u)\n",
+                  SUDO_AWESOME_JWT_NAME,
+                  (unsigned)SUDO_API_VERSION_MINOR,
+                  (unsigned)SUDO_API_VERSION_GET_MINOR(version));
+    }
 
     g_printf = sudo_plugin_printf;
     g_debug_override = 0;
-
+    jwt_common_parse_debug_options(plugin_options);
     if (plugin_options) {
         for (size_t i = 0; plugin_options[i]; i++) {
             const char *opt = plugin_options[i];
             if (strncmp(opt, "config=", 7) == 0) {
                 config_path = opt + 7;
-            } else if (strncmp(opt, "debug=", 6) == 0) {
-                int dbg_val = 0;
-                if (parse_bool(opt + 6, &dbg_val) == 0) {
-                    g_debug_override = dbg_val;
-                }
-            } else if (strcmp(opt, "debug") == 0) {
-                g_debug_override = 1;
             }
         }
     }
 
     if (debug_enabled()) {
-        debug_log("sudo-awesome-jwt: plugin options:\n");
+    debug_log("%s: plugin options:\n", SUDO_AWESOME_JWT_NAME);
         if (plugin_options) {
             for (size_t i = 0; plugin_options[i]; i++) {
                 debug_log("  %s\n", plugin_options[i]);
@@ -1388,14 +1412,14 @@ int jwt_common_open(unsigned int version, sudo_printf_t sudo_plugin_printf,
 
     free_config(g_cfg);
     g_cfg = NULL;
-    debug_log("sudo-awesome-jwt: using config %s\n", config_path);
+    debug_log("%s: using config %s\n", SUDO_AWESOME_JWT_NAME, config_path);
     if (load_config(config_path, &g_cfg, err_out) != 0) {
         if (tmp_err && !errstr) {
-            debug_log("sudo-awesome-jwt: config load failed: %s\n", tmp_err);
+            debug_log("%s: config load failed: %s\n", SUDO_AWESOME_JWT_NAME, tmp_err);
         }
         return -1;
     }
-    debug_log("sudo-awesome-jwt: config loaded\n");
+    debug_log("%s: config loaded\n", SUDO_AWESOME_JWT_NAME);
 
     return 1;
 }
@@ -1423,7 +1447,7 @@ int jwt_common_check(char * const command_info[], char * const run_argv[],
 
     if (!g_cfg) {
         *err_out = "policy not initialized";
-        debug_log("sudo-awesome-jwt: policy not initialized\n");
+        debug_log("%s: policy not initialized\n", SUDO_AWESOME_JWT_NAME);
         return -1;
     }
 
@@ -1467,7 +1491,7 @@ int jwt_common_check(char * const command_info[], char * const run_argv[],
 
 cleanup:
     if (debug_enabled()) {
-        debug_log("sudo-awesome-jwt: check result=%d\n", ok);
+        debug_log("%s: check result=%d\n", SUDO_AWESOME_JWT_NAME, ok);
     }
     if (!ok) {
         const char *msg = (errstr && *errstr) ? *errstr : tmp_err;
@@ -1478,7 +1502,7 @@ cleanup:
                 debug_log("%s: %s\n", prefix, msg);
             }
         } else if (debug_enabled()) {
-            debug_log("sudo-awesome-jwt: check failed without error detail\n");
+            debug_log("%s: check failed without error detail\n", SUDO_AWESOME_JWT_NAME);
         }
     }
     free_payload(payload);
@@ -1487,9 +1511,12 @@ cleanup:
 }
 
 int jwt_common_show_version(int verbose, const char *label) {
-    if (verbose && g_printf) {
-        const char *name = (label && label[0] != '\0') ? label : "sudo-jwt";
-        g_printf(SUDO_CONV_INFO_MSG, "%s 0.1\n", name);
+    (void)verbose;
+    if (g_printf) {
+        const char *name = SUDO_AWESOME_JWT_NAME;
+        const char *kind = (label && label[0] != '\0') ? label : "Plugin";
+        g_printf(SUDO_CONV_INFO_MSG, "%s: %s (%s) version %s\n",
+                 name, kind, SUDO_AWESOME_JWT_FLAVOR, SUDO_AWESOME_JWT_VERSION);
     }
     return 1;
 }

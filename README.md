@@ -1,5 +1,7 @@
 # sudo-awesome-jwt (minimal)
 
+[![CI](https://github.com/sippy/sudo_awesome_jwt/actions/workflows/build.yml/badge.svg)](https://github.com/sippy/sudo_awesome_jwt/actions/workflows/build.yml)
+
 Minimal sudo approval + policy plugin that enforces a short-lived JWT stored in a file. The approval plugin runs after sudoers and can further restrict access, while the policy plugin can replace sudoers entirely.
 
 ## Build
@@ -61,6 +63,20 @@ Plugin approval sudo_awesome_jwt.so config=/usr/local/etc/sudo_awesome_jwt.conf
 
 The approval plugin runs after sudoers. It can only restrict what sudoers already allows.
 The shared object also exports a policy plugin symbol (`policy`) if you want to use JWT as the primary policy plugin instead.
+
+## Plugin options
+
+Options are passed in `sudo.conf` on the `Plugin` line and apply to both approval and policy plugins:
+
+- `config=/path/to/sudo_awesome_jwt.conf` (optional; defaults to `/usr/local/etc/sudo_awesome_jwt.conf`)
+- `debug` (enable debug logging)
+- `debug=1|0|true|false|yes|no` (explicitly enable/disable debug logging)
+
+Example:
+
+```
+Plugin approval sudo_awesome_jwt.so config=/usr/local/etc/sudo_awesome_jwt.conf debug=1
+```
 
 ## Config
 

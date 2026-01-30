@@ -34,4 +34,11 @@ jobs:
         run: sudo /usr/bin/env SUDO_AWESOME_JWT_TEST_TTL=1 SUDO_AWESOME_JWT_TEST_WAIT=65 SUDO_AWESOME_JWT_DEBUG=1 scripts/integration_sudo_plugin_test.sh
 
       - name: Integration test (Rust plugin)
-        run: sudo /usr/bin/env SUDO_AWESOME_JWT_PLUGIN_LIB="$PWD/rust/target/release/sudo_awesome_jwt_rust.so" SUDO_AWESOME_JWT_TEST_TTL=1 SUDO_AWESOME_JWT_TEST_WAIT=65 SUDO_AWESOME_JWT_DEBUG=1 bash -x scripts/integration_sudo_plugin_test.sh
+        run: sudo /usr/bin/env SUDO_AWESOME_JWT_PLUGIN_LIB="$PWD/rust/target/release/sudo_awesome_jwt_rust.so" SUDO_AWESOME_JWT_TEST_TTL=1 SUDO_AWESOME_JWT_TEST_WAIT=65 SUDO_AWESOME_JWT_DEBUG=1 scripts/integration_sudo_plugin_test.sh
+
+  roll_release:
+    name: Roll Release
+    needs: [build_and_test]
+    permissions:
+      contents: write
+    uses: sippy/cimagic/.github/workflows/RollReleaseDraft.yml@v2

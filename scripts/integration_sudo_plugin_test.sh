@@ -14,12 +14,47 @@ PLUGIN_DEBUG_LOG="$WORKDIR/sudo_plugin_debug.log"
 
 PLUGIN_LIB=${SUDO_AWESOME_JWT_PLUGIN_LIB:-"$ROOT_DIR/sudo_awesome_jwt.so"}
 PLUGIN_BASENAME=$(basename "$PLUGIN_LIB")
-TEST_CMD=${SUDO_AWESOME_JWT_TEST_COMMAND:-"/usr/bin/id"}
+TEST_COMMANDS=()
 WAIT_SECS=${SUDO_AWESOME_JWT_TEST_WAIT:-70}
 TTL_SECS=${SUDO_AWESOME_JWT_TEST_TTL:-5}
 INTERACTIVE=${SUDO_AWESOME_JWT_TEST_INTERACTIVE:-0}
-DEBUG=${SUDO_AWESOME_JWT_TEST_DEBUG:-${SUDO_AWESOME_JWT_DEBUG:-0}}
+DEBUG=${SUDO_AWESOME_JWT_DEBUG:-0}
 DEBUG_OPT=""
+RUNAS_USER=${SUDO_AWESOME_JWT_TEST_RUNAS_USER:-nobody}
+RUNAS_UID=""
+ID_CMD=$(command -v id || echo "/usr/bin/id")
+
+if [[ -n "${SUDO_AWESOME_JWT_TEST_COMMANDS:-}" ]]; then
+    IFS=',' read -r -a TEST_COMMANDS <<< "${SUDO_AWESOME_JWT_TEST_COMMANDS}"
+elif [[ -n "${SUDO_AWESOME_JWT_TEST_COMMAND:-}" ]]; then
+    TEST_COMMANDS=("${SUDO_AWESOME_JWT_TEST_COMMAND}")
+else
+    TEST_COMMANDS=("/bin/id" "id")
+fi
+
+if [[ "${#TEST_COMMANDS[@]}" -gt 0 ]]; then
+    SANITIZED_COMMANDS=()
+    for cmd in "${TEST_COMMANDS[@]}"; do
+        cmd="${cmd#"${cmd%%[![:space:]]*}"}"
+        cmd="${cmd%"${cmd##*[![:space:]]}"}"
+        if [[ -n "$cmd" ]]; then
+            SANITIZED_COMMANDS+=("$cmd")
+        fi
+    done
+    TEST_COMMANDS=("${SANITIZED_COMMANDS[@]}")
+fi
+
+if [[ "${#TEST_COMMANDS[@]}" -eq 0 ]]; then
+    TEST_COMMANDS=("/bin/id" "id")
+fi
+
+if [[ -n "$RUNAS_USER" ]]; then
+    if "$ID_CMD" -u "$RUNAS_USER" >/dev/null 2>&1; then
+        RUNAS_UID=$("$ID_CMD" -u "$RUNAS_USER" 2>/dev/null || true)
+    else
+        RUNAS_USER=""
+    fi
+fi
 
 log() {
     echo "[test] $*"
@@ -31,7 +66,7 @@ log_err() {
 
 debug() {
     if [[ "$DEBUG" == "1" ]]; then
-        echo "[debug] $*"
+        echo "[debug] $*" >&2
     fi
 }
 
@@ -39,30 +74,31 @@ dump_debug() {
     if [[ "$DEBUG" != "1" ]]; then
         return
     fi
-    FILTER="${1:-"tail -n 2000"}"
-    echo "[debug] sudo.conf plugin lines:"
-    run_privileged awk '/^Plugin/ {print NR ":" $0}' "$SUDO_CONF" || true
-    if command -v nm >/dev/null; then
-        echo "[debug] exported symbols (filtered):"
-        nm -D "$PLUGIN_LIB" 2>/dev/null | awk '/(approval|policy)/ {print}' || true
-    elif command -v objdump >/dev/null; then
-        echo "[debug] exported symbols (filtered):"
-        objdump -T "$PLUGIN_LIB" 2>/dev/null | awk '/(approval|policy)/ {print}' || true
-    fi
-    if [[ -f "$SUDO_DEBUG_LOG" ]]; then
-        echo "[debug] sudo debug log path: $SUDO_DEBUG_LOG"
-        echo "[debug] sudo debug log (plugin/load):"
-        grep -E "sudo_load_plugin|sudo_load_plugins|dlopen|dlsym|plugin|policy" "$SUDO_DEBUG_LOG" | ${FILTER} || true
-        echo "[debug] sudo debug log (tail):"
-        ${FILTER} "$SUDO_DEBUG_LOG" || true
-    fi
-    if [[ -f "$PLUGIN_DEBUG_LOG" ]]; then
-        echo "[debug] plugin debug log:"
-        tail -n 200 "$PLUGIN_DEBUG_LOG" || true
-    fi
-    if command -v python3 >/dev/null; then
-        echo "[debug] plugin struct check:"
-        PLUGIN_LIB="$PLUGIN_LIB" python3 - <<'PY' || true
+    FILTER="${1:-"tail -n 200"}"
+    {
+        echo "[debug] sudo.conf plugin lines:"
+        run_privileged awk '/^Plugin/ {print NR ":" $0}' "$SUDO_CONF" || true
+        if command -v nm >/dev/null; then
+            echo "[debug] exported symbols (filtered):"
+            nm -D "$PLUGIN_LIB" 2>/dev/null | awk '/(approval|policy)/ {print}' || true
+        elif command -v objdump >/dev/null; then
+            echo "[debug] exported symbols (filtered):"
+            objdump -T "$PLUGIN_LIB" 2>/dev/null | awk '/(approval|policy)/ {print}' || true
+        fi
+        if [[ -f "$SUDO_DEBUG_LOG" ]]; then
+            echo "[debug] sudo debug log path: $SUDO_DEBUG_LOG"
+            echo "[debug] sudo debug log (plugin/load):"
+            grep -E "sudo_load_plugin|sudo_load_plugins|dlopen|dlsym|plugin|policy" "$SUDO_DEBUG_LOG" | ${FILTER} || true
+            echo "[debug] sudo debug log (tail):"
+            ${FILTER} "$SUDO_DEBUG_LOG" || true
+        fi
+        if [[ -f "$PLUGIN_DEBUG_LOG" ]]; then
+            echo "[debug] plugin debug log:"
+            tail -n 200 "$PLUGIN_DEBUG_LOG" || true
+        fi
+        if command -v python3 >/dev/null; then
+            echo "[debug] plugin struct check:"
+            PLUGIN_LIB="$PLUGIN_LIB" python3 - <<'PY' || true
 import ctypes
 import os
 
@@ -123,9 +159,10 @@ print(f"  plugin: {path}")
 dump("policy", "policy", PolicyPlugin)
 dump("approval", "approval", ApprovalPlugin)
 PY
-    fi
-    echo "[debug] sudo conf"
-    cat "${SUDO_CONF}"
+        fi
+        echo "[debug] sudo conf"
+        grep -v '^#' "${SUDO_CONF}" | grep -v '^$' | uniq
+    } >&2
 }
 
 write_sudo_conf_base() {
@@ -166,6 +203,10 @@ run_sudo() {
     else
         sudo -n "$@"
     fi
+}
+
+run_sudo_version() {
+    sudo -V
 }
 
 run_privileged() {
@@ -333,27 +374,64 @@ run_once() {
         set_sudo_conf_policy
     fi
 
-    write_token "$TTL_SECS"
-    log "running sudo command with fresh token"
-    if ! output=$(run_sudo "$TEST_CMD" 2>&1); then
+    log "running sudo -V ($plugin_type)"
+    if ! output=$(run_sudo_version 2>&1); then
         echo "$output" >&2
         dump_debug
-        echo "expected sudo to succeed for $plugin_type with fresh token" >&2
+        echo "expected sudo -V to succeed for $plugin_type" >&2
         exit 1
-    else
-        dump_debug "head -n 1000"
+    fi
+
+    log "running sudo -l ($plugin_type)"
+    if ! output=$(run_sudo -l 2>&1); then
+        echo "$output" >&2
+        dump_debug
+        echo "expected sudo -l to succeed for $plugin_type" >&2
+        exit 1
+    fi
+
+    write_token "$TTL_SECS"
+    for cmd in "${TEST_COMMANDS[@]}"; do
+        log "running sudo command with fresh token ($cmd)"
+        if ! output=$(run_sudo "$cmd" 2>&1); then
+            echo "$output" >&2
+            dump_debug
+            echo "expected sudo to succeed for $plugin_type with fresh token ($cmd)" >&2
+            exit 1
+        fi
+    done
+
+    if [[ -n "$RUNAS_USER" && -n "$RUNAS_UID" ]]; then
+        log "running sudo command with runas user ($RUNAS_USER) ($plugin_type)"
+        runas_err="$WORKDIR/runas.stderr"
+        if ! output=$(run_sudo -u "$RUNAS_USER" "$ID_CMD" -u 2>"$runas_err"); then
+            cat "$runas_err" >&2 || true
+            dump_debug
+            echo "expected sudo -u $RUNAS_USER to succeed for $plugin_type" >&2
+            exit 1
+        fi
+        output_trimmed=$(echo "$output" | tr -d '[:space:]')
+        if [[ "$output_trimmed" != "$RUNAS_UID" ]]; then
+            cat "$runas_err" >&2 || true
+            echo "$output" >&2
+            dump_debug
+            echo "expected sudo -u $RUNAS_USER to run as uid $RUNAS_UID for $plugin_type" >&2
+            exit 1
+        fi
     fi
 
     log "waiting $WAIT_SECS seconds for token expiry"
     sleep "$WAIT_SECS"
 
-    log "running sudo command after expiry"
-    if output=$(run_sudo "$TEST_CMD" 2>&1); then
-        echo "$output" >&2
-        dump_debug
-        echo "expected sudo to fail for $plugin_type after token expiry" >&2
-        exit 1
-    fi
+    for cmd in "${TEST_COMMANDS[@]}"; do
+        log "running sudo command after expiry ($cmd)"
+        if output=$(run_sudo "$cmd" 2>&1); then
+            echo "$output" >&2
+            dump_debug
+            echo "expected sudo to fail for $plugin_type after token expiry ($cmd)" >&2
+            exit 1
+        fi
+    done
 }
 
 run_once approval
