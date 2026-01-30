@@ -10,6 +10,7 @@ use std::os::unix::fs::MetadataExt;
 use std::ptr;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::env;
 
 const SUDO_API_VERSION_MAJOR: u32 = 1;
 const SUDO_API_VERSION_MINOR: u32 = 22;
@@ -111,6 +112,19 @@ fn log_error(state: &State, prefix: &str, msg: &str) {
     let msg_c = CString::new(message).ok();
     if let (Some(fmt), Some(msg_c)) = (fmt, msg_c) {
         printf_fn(SUDO_CONV_ERROR_MSG, fmt.as_ptr(), msg_c.as_ptr());
+    }
+}
+
+fn debug_enabled() -> bool {
+    match env::var("SUDO_AWESOME_JWT_DEBUG") {
+        Ok(val) => !val.is_empty() && val != "0",
+        Err(_) => false,
+    }
+}
+
+fn debug_log(msg: &str) {
+    if debug_enabled() {
+        eprintln!("sudo-awesome-jwt-policy: {msg}");
     }
 }
 
@@ -645,14 +659,17 @@ extern "C" fn sudo_jwt_policy_open(
     plugin_options: *const *const c_char,
     errstr: *mut *const c_char,
 ) -> c_int {
+    debug_log("policy_open");
     sudo_jwt_approval_open(version, None, sudo_plugin_printf, ptr::null(), user_info, 0, ptr::null(), ptr::null(), plugin_options, errstr)
 }
 
 extern "C" fn sudo_jwt_policy_close(_exit_status: c_int, _error: c_int) {
+    debug_log("policy_close");
     sudo_jwt_approval_close();
 }
 
 extern "C" fn sudo_jwt_policy_show_version(_verbose: c_int) -> c_int {
+    debug_log("policy_show_version");
     1
 }
 
@@ -665,6 +682,7 @@ extern "C" fn sudo_jwt_policy_check(
     user_env_out: *mut *const *const c_char,
     errstr: *mut *const c_char,
 ) -> c_int {
+    debug_log("policy_check");
     unsafe {
         if !command_info.is_null() {
             *command_info = ptr::null();
@@ -699,10 +717,12 @@ extern "C" fn sudo_jwt_policy_list(
     _user: *const c_char,
     _errstr: *mut *const c_char,
 ) -> c_int {
+    debug_log("policy_list");
     1
 }
 
 extern "C" fn sudo_jwt_policy_validate(_errstr: *mut *const c_char) -> c_int {
+    debug_log("policy_validate");
     1
 }
 
@@ -713,6 +733,7 @@ extern "C" fn sudo_jwt_policy_init_session(
     _user_env_out: *mut *const *const c_char,
     _errstr: *mut *const c_char,
 ) -> c_int {
+    debug_log("policy_init_session");
     1
 }
 
