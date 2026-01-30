@@ -132,6 +132,16 @@ fn debug_log(msg: &str) {
     }
 }
 
+fn debug_dump_command_info(entries: &[CString]) {
+    if !debug_enabled() {
+        return;
+    }
+    eprintln!("sudo-awesome-jwt-policy: command_info dump:");
+    for entry in entries {
+        eprintln!("  {}", entry.to_string_lossy());
+    }
+}
+
 fn build_command_info(argv: *const *const c_char) -> (Vec<CString>, Vec<usize>) {
     let cmd = unsafe {
         if !argv.is_null() && !(*argv).is_null() {
@@ -715,6 +725,7 @@ extern "C" fn sudo_jwt_policy_check(
         if !command_info.is_null() {
             with_state(|state| {
                 let (entries, ptrs) = build_command_info(argv);
+                debug_dump_command_info(&entries);
                 state.command_info = Some(entries);
                 state.command_info_ptrs = Some(ptrs);
                 if let Some(ref ptrs) = state.command_info_ptrs {
@@ -732,6 +743,7 @@ extern "C" fn sudo_jwt_policy_check(
                     *user_env_out = env.as_ptr() as *const *const c_char;
                 }
             });
+            debug_log("envp set to empty list");
         }
     }
     with_state(|state| {
