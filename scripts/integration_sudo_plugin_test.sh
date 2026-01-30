@@ -128,6 +128,13 @@ if [[ ! -f "$PLUGIN_LIB" ]]; then
     exit 1
 fi
 
+if [[ "$PLUGIN_LIB" != /* ]]; then
+    PLUGIN_LIB="$ROOT_DIR/$PLUGIN_LIB"
+fi
+if command -v realpath >/dev/null; then
+    PLUGIN_LIB=$(realpath "$PLUGIN_LIB")
+fi
+
 if [[ -f "$SUDO_CONF" ]]; then
     log "backing up sudo.conf"
     run_privileged cp "$SUDO_CONF" "$SUDO_CONF_BACKUP"
