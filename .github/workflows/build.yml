@@ -5,7 +5,8 @@ on:
   pull_request:
 
 jobs:
-  build:
+  build_and_test:
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -26,8 +27,11 @@ jobs:
         run: cargo build --release
         working-directory: rust
 
+      - name: Prepare Rust plugin filename
+        run: cp -f rust/target/release/libsudo_awesome_jwt_rust.so rust/target/release/sudo_awesome_jwt_rust.so
+
       - name: Integration test (C plugin)
-        run: sudo /usr/bin/env SUDO_AWESOME_JWT_TEST_TTL=1 SUDO_AWESOME_JWT_TEST_WAIT=65 SUDO_AWESOME_JWT_DEBUG=1 bash -x scripts/integration_sudo_plugin_test.sh
+        run: sudo /usr/bin/env SUDO_AWESOME_JWT_TEST_TTL=1 SUDO_AWESOME_JWT_TEST_WAIT=65 SUDO_AWESOME_JWT_DEBUG=1 scripts/integration_sudo_plugin_test.sh
 
       - name: Integration test (Rust plugin)
-        run: sudo /usr/bin/env SUDO_AWESOME_JWT_PLUGIN_LIB=rust/target/release/libsudo_awesome_jwt_rust.so SUDO_AWESOME_JWT_TEST_TTL=1 SUDO_AWESOME_JWT_TEST_WAIT=65 SUDO_AWESOME_JWT_DEBUG=1 scripts/integration_sudo_plugin_test.sh
+        run: sudo /usr/bin/env SUDO_AWESOME_JWT_PLUGIN_LIB="$PWD/rust/target/release/sudo_awesome_jwt_rust.so" SUDO_AWESOME_JWT_TEST_TTL=1 SUDO_AWESOME_JWT_TEST_WAIT=65 SUDO_AWESOME_JWT_DEBUG=1 bash -x scripts/integration_sudo_plugin_test.sh

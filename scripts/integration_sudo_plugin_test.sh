@@ -116,7 +116,7 @@ fi
 
 if [[ ! -f "$PLUGIN_LIB" ]]; then
     log "plugin not found, building it"
-    if [[ "$PLUGIN_LIB" == *"libsudo_awesome_jwt_rust.so"* ]]; then
+    if [[ "$PLUGIN_LIB" == *"sudo_awesome_jwt_rust.so"* ]]; then
         (cd "$ROOT_DIR/rust" && cargo build --release)
     else
         (cd "$ROOT_DIR" && make)
@@ -128,12 +128,6 @@ if [[ ! -f "$PLUGIN_LIB" ]]; then
     exit 1
 fi
 
-if [[ "$PLUGIN_LIB" != /* ]]; then
-    PLUGIN_LIB="$ROOT_DIR/$PLUGIN_LIB"
-fi
-if command -v realpath >/dev/null; then
-    PLUGIN_LIB=$(realpath "$PLUGIN_LIB")
-fi
 
 if [[ -f "$SUDO_CONF" ]]; then
     log "backing up sudo.conf"
