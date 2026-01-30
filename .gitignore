@@ -1,0 +1,5 @@
+# Rust build artifacts
+rust/target/
+
+# Local trace output
+**/ktrace.out

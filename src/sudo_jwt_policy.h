@@ -3,6 +3,6 @@
 
 #include <sudo_plugin.h>
 
-extern struct policy_plugin sudo_jwt_policy;
+extern struct policy_plugin policy;
 
 #endif

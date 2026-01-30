@@ -24,14 +24,14 @@ static void approval_close(void) {
 static int approval_check(char * const command_info[], char * const run_argv[],
                           char * const run_envp[], const char **errstr) {
     (void)run_envp;
-    return jwt_common_check(command_info, run_argv, errstr, "sudo-jwt-approval");
+    return jwt_common_check(command_info, run_argv, errstr, "sudo-awesome-jwt-approval");
 }
 
 static int approval_show_version(int verbose) {
-    return jwt_common_show_version(verbose, "sudo-jwt-approval");
+    return jwt_common_show_version(verbose, "sudo-awesome-jwt-approval");
 }
 
-__attribute__((visibility("default"))) struct approval_plugin sudo_jwt_approval = {
+__attribute__((visibility("default"))) struct approval_plugin approval = {
     SUDO_APPROVAL_PLUGIN,
     SUDO_API_VERSION,
     approval_open,

@@ -3,6 +3,6 @@
 
 #include <sudo_plugin.h>
 
-extern struct approval_plugin sudo_jwt_approval;
+extern struct approval_plugin approval;
 
 #endif

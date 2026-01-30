@@ -5,7 +5,7 @@ CPPFLAGS ?=
 CPPFLAGS += -I/usr/local/include
 LDFLAGS ?=
 LDFLAGS += -shared
-EXPORTS_FILE ?= exports.map
+EXPORTS_FILE ?= src/exports.map
 LDFLAGS += -Wl,--version-script=$(EXPORTS_FILE)
 OPENSSL_STATIC ?= 0
 OPENSSL_LIBS ?= -lcrypto

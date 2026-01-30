@@ -15,12 +15,35 @@ Dependencies:
 - OpenSSL (`libcrypto`)
 
 Build notes:
-- Symbols are hidden by default (`-fvisibility=hidden`); `exports.map` exports `sudo_jwt_approval` and `sudo_jwt_policy` via a linker version script.
+- Symbols are hidden by default (`-fvisibility=hidden`); `src/exports.map` exports `approval` and `policy` via a linker version script.
 - To link against static OpenSSL (if static libs are installed), build with:
   ```
   make OPENSSL_STATIC=1
   ```
   You can also override `OPENSSL_LIBS` directly if your platform needs different flags.
+
+## Rust version (optional)
+
+An experimental Rust build lives in `rust/` and produces a cdylib with the same exported symbols (`approval`, `policy`).
+
+Build:
+```sh
+cd rust
+cargo build --release
+```
+
+Output:
+- `rust/target/release/libsudo_awesome_jwt_rust.so`
+
+Notes:
+- Supports `RS256` and `EdDSA` (Ed25519/Ed448) like the C version.
+- Still reads the same `sudo_awesome_jwt.conf` file and uses the same config keys.
+- Symbol exports are restricted via `src/exports.map` and `rust/build.rs`.
+- To request static OpenSSL when building the Rust version, set:
+  ```
+  OPENSSL_STATIC=1 cargo build --release
+  ```
+  Static `libcrypto`/`libssl` must be available on the system.
 
 ## Install (example)
 
@@ -33,11 +56,11 @@ Configure sudoers as the policy plugin and add the approval plugin in `/etc/sudo
 
 ```
 Plugin sudoers_policy sudoers.so
-Plugin sudo_jwt_approval sudo_awesome_jwt.so config=/usr/local/etc/sudo_awesome_jwt.conf
+Plugin approval sudo_awesome_jwt.so config=/usr/local/etc/sudo_awesome_jwt.conf
 ```
 
 The approval plugin runs after sudoers. It can only restrict what sudoers already allows.
-The shared object also exports a policy plugin symbol (`sudo_jwt_policy`) if you want to use JWT as the primary policy plugin instead.
+The shared object also exports a policy plugin symbol (`policy`) if you want to use JWT as the primary policy plugin instead.
 
 ## Config
 
@@ -57,7 +80,7 @@ Optional:
 - `require_jwt` (default: true)
 - `only_user` (if set, enforce JWT only for this user)
 - `only_uid` (if set, enforce JWT only for this uid)
-- `command_allowlist` (comma-separated list of absolute command paths that require JWT; if set, other commands bypass the plugin)
+- `command_allowlist` (comma-separated list of absolute command paths that require JWT; if set, other commands bypass the plugin). If unquoted and begins with `/`, it is treated as a file path and the file contents are parsed as the list.
 - `audience` may be a quoted string or an absolute path to a file containing the audience value
 
 ## JWT requirements

@@ -24,6 +24,7 @@
 #define MAX_TOKEN_BYTES 16384
 #define CLOCK_SKEW_SECONDS 60
 #define MAX_AUDIENCE_BYTES 1024
+#define MAX_ALLOWLIST_BYTES 4096
 
 struct policy_config {
     char *token_file;
@@ -50,6 +51,9 @@ static uid_t g_uid;
 static int g_uid_valid;
 
 static int read_text_file(const char *path, size_t max_len, char **out, const char **errstr);
+static int read_allowlist_file(const char *path, size_t max_len, char **out, const char **errstr);
+static int add_allowlist_entries(struct policy_config *cfg, char *list, int allow_expand, const char **errstr);
+static char *expand_vars(const char *input);
 
 static void plugin_log(int msg_type, const char *fmt, ...) {
     if (!g_printf) {
@@ -115,6 +119,83 @@ static char *strip_quotes(char *s) {
         return s + 1;
     }
     return s;
+}
+
+static char *expand_vars(const char *input) {
+    size_t in_len;
+    size_t out_cap;
+    size_t out_len = 0;
+    char *out;
+    int changed = 0;
+    char uid_buf[32];
+    const char *user = g_user;
+    const char *uid = NULL;
+
+    if (!input) {
+        return NULL;
+    }
+
+    if (g_uid_valid) {
+        snprintf(uid_buf, sizeof(uid_buf), "%u", (unsigned)g_uid);
+        uid = uid_buf;
+    }
+
+    in_len = strlen(input);
+    out_cap = in_len + 1;
+    out = xmalloc(out_cap);
+
+    for (size_t i = 0; i < in_len; i++) {
+        if (input[i] == '$' && i + 1 < in_len && input[i + 1] == '{') {
+            size_t start = i + 2;
+            size_t end = start;
+            while (end < in_len && input[end] != '}') {
+                end++;
+            }
+            if (end < in_len && input[end] == '}') {
+                size_t key_len = end - start;
+                const char *rep = NULL;
+                if (key_len == 4 && strncmp(input + start, "user", 4) == 0) {
+                    rep = user;
+                } else if (key_len == 3 && strncmp(input + start, "uid", 3) == 0) {
+                    rep = uid;
+                }
+
+                if (rep) {
+                    size_t rep_len = strlen(rep);
+                    if (out_len + rep_len + 1 > out_cap) {
+                        out_cap = out_len + rep_len + 1;
+                        out = realloc(out, out_cap);
+                        if (!out) {
+                            abort();
+                        }
+                    }
+                    memcpy(out + out_len, rep, rep_len);
+                    out_len += rep_len;
+                    changed = 1;
+                    i = end;
+                    continue;
+                }
+            }
+        }
+
+        if (out_len + 2 > out_cap) {
+            out_cap = out_cap * 2;
+            out = realloc(out, out_cap);
+            if (!out) {
+                abort();
+            }
+        }
+        out[out_len++] = input[i];
+    }
+
+    out[out_len] = '\0';
+
+    if (!changed) {
+        free(out);
+        return NULL;
+    }
+
+    return out;
 }
 
 static int parse_bool(const char *s, int *out) {
@@ -210,97 +291,119 @@ static int load_config(const char *path, struct policy_config **out, const char 
         }
 
         int val_quoted = 0;
+        char quote_char = '\0';
         size_t val_len = strlen(val);
         if (val_len >= 2 && ((val[0] == '"' && val[val_len - 1] == '"') || (val[0] == '\'' && val[val_len - 1] == '\''))) {
             val_quoted = 1;
+            quote_char = val[0];
         }
 
         val = strip_quotes(val);
 
         if (strcasecmp(key, "command_allowlist") == 0 || strcasecmp(key, "command_allowlist_csv") == 0) {
-            char *cursor = val;
-            while (cursor && *cursor) {
-                char *comma = strchr(cursor, ',');
-                char *entry;
-                size_t entry_len;
-                if (comma) {
-                    *comma = '\0';
+            char *path_val = val;
+            char *path_expanded = NULL;
+            int allow_expand = (quote_char != '\'');
+
+            if (allow_expand) {
+                path_expanded = expand_vars(val);
+                if (path_expanded) {
+                    path_val = path_expanded;
                 }
-                entry = trim_whitespace(cursor);
-                entry_len = strlen(entry);
-                if (entry_len > 0) {
-                    char **next = realloc(cfg->command_allowlist, sizeof(char *) * (cfg->command_allowlist_len + 1));
-                    if (!next) {
-                        fclose(fp);
-                        free_config(cfg);
-                        if (errstr) {
-                            *errstr = "out of memory";
-                        }
-                        return -1;
-                    }
-                    cfg->command_allowlist = next;
-                    cfg->command_allowlist[cfg->command_allowlist_len++] = xstrdup(entry);
-                }
-                if (!comma) {
-                    break;
-                }
-                cursor = comma + 1;
             }
+
+            if (!val_quoted && path_val[0] == '/') {
+                char *list = NULL;
+                if (read_allowlist_file(path_val, MAX_ALLOWLIST_BYTES, &list, errstr) != 0) {
+                    free(path_expanded);
+                    fclose(fp);
+                    free_config(cfg);
+                    return -1;
+                }
+                if (add_allowlist_entries(cfg, list, allow_expand, errstr) != 0) {
+                    free(list);
+                    free(path_expanded);
+                    fclose(fp);
+                    free_config(cfg);
+                    return -1;
+                }
+                free(list);
+            } else {
+                if (add_allowlist_entries(cfg, path_val, allow_expand, errstr) != 0) {
+                    free(path_expanded);
+                    fclose(fp);
+                    free_config(cfg);
+                    return -1;
+                }
+            }
+            free(path_expanded);
             continue;
+        }
+
+        char *expanded = NULL;
+        const char *val_use = val;
+        if (quote_char != '\'') {
+            expanded = expand_vars(val);
+            if (expanded) {
+                val_use = expanded;
+            }
         }
 
         if (strcasecmp(key, "token_file") == 0) {
             free(cfg->token_file);
-            cfg->token_file = xstrdup(val);
+            cfg->token_file = xstrdup(val_use);
         } else if (strcasecmp(key, "public_key") == 0) {
             free(cfg->public_key);
-            cfg->public_key = xstrdup(val);
+            cfg->public_key = xstrdup(val_use);
         } else if (strcasecmp(key, "issuer") == 0) {
             free(cfg->issuer);
-            cfg->issuer = xstrdup(val);
+            cfg->issuer = xstrdup(val_use);
         } else if (strcasecmp(key, "audience") == 0) {
             free(cfg->audience);
             cfg->audience = NULL;
-            if (!val_quoted && val[0] == '/') {
-                if (read_text_file(val, MAX_AUDIENCE_BYTES, &cfg->audience, errstr) != 0) {
+            if (!val_quoted && val_use[0] == '/') {
+                if (read_text_file(val_use, MAX_AUDIENCE_BYTES, &cfg->audience, errstr) != 0) {
+                    free(expanded);
                     fclose(fp);
                     free_config(cfg);
                     return -1;
                 }
             } else {
-                cfg->audience = xstrdup(val);
+                cfg->audience = xstrdup(val_use);
             }
         } else if (strcasecmp(key, "scope") == 0) {
             free(cfg->scope);
-            cfg->scope = xstrdup(val);
+            cfg->scope = xstrdup(val_use);
         } else if (strcasecmp(key, "host") == 0) {
             free(cfg->host);
-            cfg->host = xstrdup(val);
+            cfg->host = xstrdup(val_use);
         } else if (strcasecmp(key, "max_ttl") == 0) {
-            cfg->max_ttl = strtol(val, NULL, 10);
+            cfg->max_ttl = strtol(val_use, NULL, 10);
         } else if (strcasecmp(key, "only_user") == 0) {
             free(cfg->only_user);
-            cfg->only_user = xstrdup(val);
+            cfg->only_user = xstrdup(val_use);
         } else if (strcasecmp(key, "only_uid") == 0) {
             char *endp = NULL;
             long long uid_val;
             errno = 0;
-            uid_val = strtoll(val, &endp, 10);
+            uid_val = strtoll(val_use, &endp, 10);
             if (errno == 0 && endp != val && uid_val >= 0) {
                 cfg->only_uid = (uid_t)uid_val;
                 cfg->only_uid_set = 1;
             }
         } else if (strcasecmp(key, "require_tty") == 0) {
             int bval;
-            if (parse_bool(val, &bval) == 0) {
+            if (parse_bool(val_use, &bval) == 0) {
                 cfg->require_tty = bval;
             }
         } else if (strcasecmp(key, "require_jwt") == 0) {
             int bval;
-            if (parse_bool(val, &bval) == 0) {
+            if (parse_bool(val_use, &bval) == 0) {
                 cfg->require_jwt = bval;
             }
         }
+
+        free(expanded);
     }
 
     fclose(fp);
@@ -483,6 +586,138 @@ static int read_text_file(const char *path, size_t max_len, char **out, const ch
 
     *out = xstrdup(trimmed);
     free(buf);
+    return 0;
+}
+
+static int read_allowlist_file(const char *path, size_t max_len, char **out, const char **errstr) {
+    int fd;
+    struct stat st;
+    ssize_t nread;
+    char *buf;
+    char *trimmed;
+
+    fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        if (errstr) {
+            *errstr = "unable to open command allowlist file";
+        }
+        return -1;
+    }
+
+    if (fstat(fd, &st) != 0) {
+        close(fd);
+        if (errstr) {
+            *errstr = "unable to stat command allowlist file";
+        }
+        return -1;
+    }
+
+    if (!S_ISREG(st.st_mode)) {
+        close(fd);
+        if (errstr) {
+            *errstr = "command allowlist file is not regular";
+        }
+        return -1;
+    }
+
+    if ((st.st_mode & 022) != 0) {
+        close(fd);
+        if (errstr) {
+            *errstr = "command allowlist file is writable by group or others";
+        }
+        return -1;
+    }
+
+    if (st.st_size <= 0 || st.st_size > (off_t)max_len) {
+        close(fd);
+        if (errstr) {
+            *errstr = "command allowlist file size invalid";
+        }
+        return -1;
+    }
+
+    buf = xmalloc((size_t)st.st_size + 1);
+    nread = read(fd, buf, (size_t)st.st_size);
+    close(fd);
+
+    if (nread <= 0) {
+        free(buf);
+        if (errstr) {
+            *errstr = "unable to read command allowlist file";
+        }
+        return -1;
+    }
+
+    buf[nread] = '\0';
+    trimmed = trim_whitespace(buf);
+    if (trimmed[0] == '\0') {
+        free(buf);
+        if (errstr) {
+            *errstr = "command allowlist file empty";
+        }
+        return -1;
+    }
+
+    *out = xstrdup(trimmed);
+    free(buf);
+    return 0;
+}
+
+static int add_allowlist_entries(struct policy_config *cfg, char *list, int allow_expand, const char **errstr) {
+    char *cursor = list;
+
+    while (cursor && *cursor) {
+        while (*cursor && (isspace((unsigned char)*cursor) || *cursor == ',')) {
+            cursor++;
+        }
+        if (!*cursor) {
+            break;
+        }
+
+        char *start = cursor;
+        while (*cursor && *cursor != ',' && *cursor != '\n' && *cursor != '\r') {
+            cursor++;
+        }
+        if (*cursor) {
+            *cursor = '\0';
+            cursor++;
+        }
+
+        char *entry = trim_whitespace(start);
+        if (*entry) {
+            char quote_char = '\0';
+            size_t entry_len = strlen(entry);
+            if (entry_len >= 2 && ((entry[0] == '"' && entry[entry_len - 1] == '"') ||
+                                   (entry[0] == '\'' && entry[entry_len - 1] == '\''))) {
+                quote_char = entry[0];
+                entry[entry_len - 1] = '\0';
+                entry = entry + 1;
+                entry = trim_whitespace(entry);
+            }
+
+            char *expanded = NULL;
+            const char *entry_use = entry;
+            if (allow_expand && quote_char != '\'') {
+                expanded = expand_vars(entry);
+                if (expanded) {
+                    entry_use = expanded;
+                }
+            }
+
+            char **next = realloc(cfg->command_allowlist, sizeof(char *) * (cfg->command_allowlist_len + 1));
+            if (!next) {
+                free(expanded);
+                if (errstr) {
+                    *errstr = "out of memory";
+                }
+                return -1;
+            }
+            cfg->command_allowlist = next;
+            cfg->command_allowlist[cfg->command_allowlist_len++] = xstrdup(entry_use);
+            free(expanded);
+        }
+    }
+
     return 0;
 }
 

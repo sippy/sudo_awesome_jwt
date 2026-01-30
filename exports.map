@@ -1,7 +1,0 @@
-{
-  global:
-    sudo_jwt_approval;
-    sudo_jwt_policy;
-  local:
-    *;
-};

@@ -23,7 +23,7 @@ static void policy_close(int exit_status, int error) {
 }
 
 static int policy_show_version(int verbose) {
-    return jwt_common_show_version(verbose, "sudo-jwt-policy");
+    return jwt_common_show_version(verbose, "sudo-awesome-jwt-policy");
 }
 
 static int policy_check(int argc, char * const argv[], char *env_add[],
@@ -42,7 +42,7 @@ static int policy_check(int argc, char * const argv[], char *env_add[],
         *user_env_out = NULL;
     }
 
-    return jwt_common_check(NULL, argv, errstr, "sudo-jwt-policy");
+    return jwt_common_check(NULL, argv, errstr, "sudo-awesome-jwt-policy");
 }
 
 static int policy_list(int argc, char * const argv[], int verbose, const char *user, const char **errstr) {
@@ -51,7 +51,7 @@ static int policy_list(int argc, char * const argv[], int verbose, const char *u
     (void)user;
     (void)errstr;
 
-    return jwt_common_show_version(verbose, "sudo-jwt-policy");
+    return jwt_common_show_version(verbose, "sudo-awesome-jwt-policy");
 }
 
 static int policy_validate(const char **errstr) {
@@ -70,7 +70,7 @@ static int policy_init_session(struct passwd *pwd, char **user_env_out[], const 
     return 1;
 }
 
-__attribute__((visibility("default"))) struct policy_plugin sudo_jwt_policy = {
+__attribute__((visibility("default"))) struct policy_plugin policy = {
     SUDO_POLICY_PLUGIN,
     SUDO_API_VERSION,
     policy_open,

@@ -1,0 +1,7 @@
+{
+  global:
+    approval;
+    policy;
+  local:
+    *;
+};
