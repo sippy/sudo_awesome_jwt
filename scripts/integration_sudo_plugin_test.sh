@@ -5,6 +5,8 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 WORKDIR=$(mktemp -d /tmp/sudo-awesome-jwt-test.XXXXXX)
 SUDO_CONF=/etc/sudo.conf
 SUDO_CONF_BACKUP="$WORKDIR/sudo.conf.bak"
+DEFAULT_CONFIG_PATH="/usr/local/etc/sudo_awesome_jwt.conf"
+DEFAULT_CONFIG_BACKUP="$WORKDIR/sudo_awesome_jwt.conf.bak"
 CONFIG_FILE="$WORKDIR/sudo_awesome_jwt.conf"
 TOKEN_FILE="$WORKDIR/token.jwt"
 KEY_PRIV="$WORKDIR/jwt.key"
@@ -90,6 +92,11 @@ cleanup() {
     else
         run_privileged rm -f "$SUDO_CONF"
     fi
+    if [[ -f "$DEFAULT_CONFIG_BACKUP" ]]; then
+        run_privileged cp "$DEFAULT_CONFIG_BACKUP" "$DEFAULT_CONFIG_PATH"
+    else
+        run_privileged rm -f "$DEFAULT_CONFIG_PATH"
+    fi
     rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
@@ -132,6 +139,10 @@ if [[ -f "$SUDO_CONF" ]]; then
     log "backing up sudo.conf"
     run_privileged cp "$SUDO_CONF" "$SUDO_CONF_BACKUP"
 fi
+if [[ -f "$DEFAULT_CONFIG_PATH" ]]; then
+    log "backing up default config"
+    run_privileged cp "$DEFAULT_CONFIG_PATH" "$DEFAULT_CONFIG_BACKUP"
+fi
 
 log "generating RSA keypair"
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$KEY_PRIV" >/dev/null 2>&1
@@ -151,6 +162,10 @@ EOF_CONFIG
 
 sed -i "s|TOKEN_FILE_PLACEHOLDER|$TOKEN_FILE|" "$CONFIG_FILE"
 sed -i "s|KEY_PUB_PLACEHOLDER|$KEY_PUB|" "$CONFIG_FILE"
+
+log "installing default config at $DEFAULT_CONFIG_PATH"
+run_privileged mkdir -p "$(dirname "$DEFAULT_CONFIG_PATH")"
+run_privileged cp "$CONFIG_FILE" "$DEFAULT_CONFIG_PATH"
 
 make_jwt() {
     local ttl="$1"
