@@ -66,7 +66,7 @@ struct State {
     tty: Option<String>,
     last_err: Option<CString>,
     command_info: Option<Vec<CString>>,
-    command_info_ptrs: Option<Vec<*const c_char>>,
+    command_info_ptrs: Option<Vec<usize>>,
     sudo_printf: SudoPrintfT,
 }
 
@@ -131,7 +131,7 @@ fn debug_log(msg: &str) {
     }
 }
 
-fn build_command_info(argv: *const *const c_char) -> (Vec<CString>, Vec<*const c_char>) {
+fn build_command_info(argv: *const *const c_char) -> (Vec<CString>, Vec<usize>) {
     let cmd = unsafe {
         if !argv.is_null() && !(*argv).is_null() {
             CStr::from_ptr(*argv).to_string_lossy().into_owned()
@@ -148,8 +148,8 @@ fn build_command_info(argv: *const *const c_char) -> (Vec<CString>, Vec<*const c
     entries.push(CString::new(format!("command_path={cmd}")).unwrap());
     entries.push(CString::new("runas_user=root").unwrap());
     entries.push(CString::new(format!("cwd={cwd}")).unwrap());
-    let mut ptrs: Vec<*const c_char> = entries.iter().map(|c| c.as_ptr()).collect();
-    ptrs.push(ptr::null());
+    let mut ptrs: Vec<usize> = entries.iter().map(|c| c.as_ptr() as usize).collect();
+    ptrs.push(0);
     (entries, ptrs)
 }
 
@@ -715,7 +715,7 @@ extern "C" fn sudo_jwt_policy_check(
                 state.command_info = Some(entries);
                 state.command_info_ptrs = Some(ptrs);
                 if let Some(ref ptrs) = state.command_info_ptrs {
-                    *command_info = ptrs.as_ptr();
+                    *command_info = ptrs.as_ptr() as *const *const c_char;
                 }
             });
         }
