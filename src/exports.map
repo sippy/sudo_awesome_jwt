@@ -2,6 +2,7 @@
   global:
     approval;
     policy;
+    sudoers_policy;
   local:
     *;
 };

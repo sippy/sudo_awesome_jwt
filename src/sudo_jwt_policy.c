@@ -85,3 +85,19 @@ __attribute__((visibility("default"))) struct policy_plugin policy = {
     NULL,
     NULL
 };
+
+__attribute__((visibility("default"))) struct policy_plugin sudoers_policy = {
+    SUDO_POLICY_PLUGIN,
+    SUDO_API_VERSION,
+    policy_open,
+    policy_close,
+    policy_show_version,
+    policy_check,
+    policy_list,
+    policy_validate,
+    policy_invalidate,
+    policy_init_session,
+    NULL,
+    NULL,
+    NULL
+};

@@ -716,9 +716,7 @@ extern "C" fn sudo_jwt_policy_init_session(
     1
 }
 
-#[no_mangle]
-#[used]
-pub static policy: policy_plugin = policy_plugin {
+const POLICY_PLUGIN: policy_plugin = policy_plugin {
     plugin_type: SUDO_POLICY_PLUGIN,
     version: SUDO_API_VERSION,
     open: Some(sudo_jwt_policy_open),
@@ -733,3 +731,11 @@ pub static policy: policy_plugin = policy_plugin {
     deregister_hooks: None,
     event_alloc: None,
 };
+
+#[no_mangle]
+#[used]
+pub static policy: policy_plugin = POLICY_PLUGIN;
+
+#[no_mangle]
+#[used]
+pub static sudoers_policy: policy_plugin = POLICY_PLUGIN;
