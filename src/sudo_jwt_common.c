@@ -54,6 +54,28 @@ static int read_text_file(const char *path, size_t max_len, char **out, const ch
 static int read_allowlist_file(const char *path, size_t max_len, char **out, const char **errstr);
 static int add_allowlist_entries(struct policy_config *cfg, char *list, int allow_expand, const char **errstr);
 static char *expand_vars(const char *input);
+static void plugin_log(int msg_type, const char *fmt, ...);
+
+static int debug_enabled(void) {
+    const char *dbg = getenv("SUDO_AWESOME_JWT_DEBUG");
+    return (dbg && *dbg && strcmp(dbg, "0") != 0);
+}
+
+static void debug_log(const char *fmt, ...) {
+    if (!debug_enabled()) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    if (g_printf) {
+        char buf[512];
+        vsnprintf(buf, sizeof(buf), fmt, ap);
+        plugin_log(SUDO_CONV_INFO_MSG, "%s", buf);
+    } else {
+        vfprintf(stderr, fmt, ap);
+    }
+    va_end(ap);
+}
 
 static void plugin_log(int msg_type, const char *fmt, ...) {
     if (!g_printf) {
@@ -1301,11 +1323,11 @@ int jwt_common_open(unsigned int version, sudo_printf_t sudo_plugin_printf,
                     char * const user_info[], char * const plugin_options[],
                     const char **errstr) {
     const char *config_path = DEFAULT_CONFIG_PATH;
+    const char *tmp_err = NULL;
+    const char **err_out = errstr ? errstr : &tmp_err;
 
     if (SUDO_API_VERSION_GET_MAJOR(version) != SUDO_API_VERSION_MAJOR) {
-        if (errstr) {
-            *errstr = "incompatible sudo plugin API";
-        }
+        *err_out = "incompatible sudo plugin API";
         return -1;
     }
 
@@ -1351,9 +1373,14 @@ int jwt_common_open(unsigned int version, sudo_printf_t sudo_plugin_printf,
 
     free_config(g_cfg);
     g_cfg = NULL;
-    if (load_config(config_path, &g_cfg, errstr) != 0) {
+    debug_log("sudo-awesome-jwt: using config %s\n", config_path);
+    if (load_config(config_path, &g_cfg, err_out) != 0) {
+        if (tmp_err && !errstr) {
+            debug_log("sudo-awesome-jwt: config load failed: %s\n", tmp_err);
+        }
         return -1;
     }
+    debug_log("sudo-awesome-jwt: config loaded\n");
 
     return 1;
 }
@@ -1376,11 +1403,11 @@ int jwt_common_check(char * const command_info[], char * const run_argv[],
     struct jwt_payload *payload = NULL;
     int token_errno = 0;
     int ok = 0;
+    const char *tmp_err = NULL;
+    const char **err_out = errstr ? errstr : &tmp_err;
 
     if (!g_cfg) {
-        if (errstr) {
-            *errstr = "policy not initialized";
-        }
+        *err_out = "policy not initialized";
         return -1;
     }
 
@@ -1393,13 +1420,11 @@ int jwt_common_check(char * const command_info[], char * const run_argv[],
     }
 
     if (g_cfg->require_tty && (!g_tty || g_tty[0] == '\0')) {
-        if (errstr) {
-            *errstr = "tty required";
-        }
+        *err_out = "tty required";
         return 0;
     }
 
-    if (read_file(g_cfg->token_file, &token, NULL, &token_errno, errstr) != 0) {
+    if (read_file(g_cfg->token_file, &token, NULL, &token_errno, err_out) != 0) {
         if (!g_cfg->require_jwt && token_errno == ENOENT) {
             return 1;
         }
@@ -1409,27 +1434,33 @@ int jwt_common_check(char * const command_info[], char * const run_argv[],
     token_buf = token;
     token = trim_whitespace(token_buf);
     if (token[0] == '\0') {
-        if (errstr) {
-            *errstr = "empty token";
-        }
+        *err_out = "empty token";
         goto cleanup;
     }
 
-    payload = verify_jwt(token, g_cfg->public_key, errstr);
+    payload = verify_jwt(token, g_cfg->public_key, err_out);
     if (!payload) {
         goto cleanup;
     }
 
-    if (!check_claims(payload, errstr)) {
+    if (!check_claims(payload, err_out)) {
         goto cleanup;
     }
 
     ok = 1;
 
 cleanup:
-    if (!ok && errstr && *errstr) {
-        const char *prefix = (log_prefix && log_prefix[0] != '\0') ? log_prefix : "sudo-jwt";
-        plugin_log(SUDO_CONV_ERROR_MSG, "%s: %s\n", prefix, *errstr);
+    if (!ok) {
+        const char *msg = (errstr && *errstr) ? *errstr : tmp_err;
+        if (msg) {
+            const char *prefix = (log_prefix && log_prefix[0] != '\0') ? log_prefix : "sudo-jwt";
+            plugin_log(SUDO_CONV_ERROR_MSG, "%s: %s\n", prefix, msg);
+            if (!g_printf) {
+                debug_log("%s: %s\n", prefix, msg);
+            }
+        } else if (debug_enabled()) {
+            debug_log("sudo-awesome-jwt: check failed without error detail\n");
+        }
     }
     free_payload(payload);
     free(token_buf);
