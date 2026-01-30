@@ -20,6 +20,26 @@ log() {
     echo "[test] $*"
 }
 
+write_sudo_conf_base() {
+    local mode="$1"
+    local dest="$2"
+    if [[ -f "$SUDO_CONF_BACKUP" ]]; then
+        awk -v mode="$mode" '
+            $1 == "Plugin" {
+                if (mode == "approval" && $2 == "approval") {
+                    next
+                }
+                if (mode == "policy" && ($2 == "sudoers_policy" || $2 == "policy")) {
+                    next
+                }
+            }
+            { print }
+        ' "$SUDO_CONF_BACKUP" > "$dest"
+    else
+        : > "$dest"
+    fi
+}
+
 run_sudo() {
     if [[ "$INTERACTIVE" == "1" ]]; then
         sudo "$@"
@@ -154,8 +174,8 @@ write_token() {
 
 set_sudo_conf_approval() {
     log "configuring sudo.conf for approval plugin"
-    cat > "$WORKDIR/sudo.conf" <<'EOF_SUDO_APPROVAL'
-Plugin sudoers_policy sudoers.so
+    write_sudo_conf_base approval "$WORKDIR/sudo.conf"
+    cat >> "$WORKDIR/sudo.conf" <<'EOF_SUDO_APPROVAL'
 Plugin approval PLUGIN_PATH_PLACEHOLDER config=CONFIG_PATH_PLACEHOLDER
 EOF_SUDO_APPROVAL
     sed -i "s|PLUGIN_PATH_PLACEHOLDER|$PLUGIN_LIB|" "$WORKDIR/sudo.conf"
@@ -165,7 +185,8 @@ EOF_SUDO_APPROVAL
 
 set_sudo_conf_policy() {
     log "configuring sudo.conf for policy plugin"
-    cat > "$WORKDIR/sudo.conf" <<'EOF_SUDO_POLICY'
+    write_sudo_conf_base policy "$WORKDIR/sudo.conf"
+    cat >> "$WORKDIR/sudo.conf" <<'EOF_SUDO_POLICY'
 Plugin policy PLUGIN_PATH_PLACEHOLDER config=CONFIG_PATH_PLACEHOLDER
 EOF_SUDO_POLICY
     sed -i "s|PLUGIN_PATH_PLACEHOLDER|$PLUGIN_LIB|" "$WORKDIR/sudo.conf"
@@ -185,7 +206,8 @@ run_once() {
 
     write_token "$TTL_SECS"
     log "running sudo command with fresh token"
-    if ! run_sudo "$TEST_CMD" >/dev/null 2>&1; then
+    if ! output=$(run_sudo "$TEST_CMD" 2>&1); then
+        echo "$output" >&2
         echo "expected sudo to succeed for $plugin_type with fresh token" >&2
         exit 1
     fi
@@ -194,7 +216,8 @@ run_once() {
     sleep "$WAIT_SECS"
 
     log "running sudo command after expiry"
-    if run_sudo "$TEST_CMD" >/dev/null 2>&1; then
+    if output=$(run_sudo "$TEST_CMD" 2>&1); then
+        echo "$output" >&2
         echo "expected sudo to fail for $plugin_type after token expiry" >&2
         exit 1
     fi
