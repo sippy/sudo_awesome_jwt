@@ -16,6 +16,7 @@ WAIT_SECS=${SUDO_AWESOME_JWT_TEST_WAIT:-70}
 TTL_SECS=${SUDO_AWESOME_JWT_TEST_TTL:-5}
 INTERACTIVE=${SUDO_AWESOME_JWT_TEST_INTERACTIVE:-0}
 DEBUG=${SUDO_AWESOME_JWT_TEST_DEBUG:-0}
+DEBUG_OPT=""
 
 log() {
     echo "[test] $*"
@@ -114,6 +115,10 @@ if [[ "$(id -u)" -ne 0 ]]; then
     exit 1
 fi
 
+if [[ "$DEBUG" == "1" ]]; then
+    DEBUG_OPT=" debug=1"
+fi
+
 if [[ ! -f "$PLUGIN_LIB" ]]; then
     log "plugin not found, building it"
     if [[ "$PLUGIN_LIB" == *"sudo_awesome_jwt_rust.so"* ]]; then
@@ -205,10 +210,11 @@ set_sudo_conf_approval() {
     log "configuring sudo.conf for approval plugin"
     write_sudo_conf_base approval "$WORKDIR/sudo.conf"
     cat >> "$WORKDIR/sudo.conf" <<'EOF_SUDO_APPROVAL'
-Plugin approval PLUGIN_PATH_PLACEHOLDER config=CONFIG_PATH_PLACEHOLDER
+Plugin approval PLUGIN_PATH_PLACEHOLDER config=CONFIG_PATH_PLACEHOLDERDEBUG_OPT_PLACEHOLDER
 EOF_SUDO_APPROVAL
     sed -i "s|PLUGIN_PATH_PLACEHOLDER|$PLUGIN_LIB|" "$WORKDIR/sudo.conf"
     sed -i "s|CONFIG_PATH_PLACEHOLDER|$CONFIG_FILE|" "$WORKDIR/sudo.conf"
+    sed -i "s|DEBUG_OPT_PLACEHOLDER|$DEBUG_OPT|" "$WORKDIR/sudo.conf"
     run_privileged cp "$WORKDIR/sudo.conf" "$SUDO_CONF"
 }
 
@@ -216,10 +222,11 @@ set_sudo_conf_policy() {
     log "configuring sudo.conf for policy plugin"
     write_sudo_conf_base policy "$WORKDIR/sudo.conf"
     cat >> "$WORKDIR/sudo.conf" <<'EOF_SUDO_POLICY'
-Plugin policy PLUGIN_PATH_PLACEHOLDER config=CONFIG_PATH_PLACEHOLDER
+Plugin policy PLUGIN_PATH_PLACEHOLDER config=CONFIG_PATH_PLACEHOLDERDEBUG_OPT_PLACEHOLDER
 EOF_SUDO_POLICY
     sed -i "s|PLUGIN_PATH_PLACEHOLDER|$PLUGIN_LIB|" "$WORKDIR/sudo.conf"
     sed -i "s|CONFIG_PATH_PLACEHOLDER|$CONFIG_FILE|" "$WORKDIR/sudo.conf"
+    sed -i "s|DEBUG_OPT_PLACEHOLDER|$DEBUG_OPT|" "$WORKDIR/sudo.conf"
     run_privileged cp "$WORKDIR/sudo.conf" "$SUDO_CONF"
 }
 

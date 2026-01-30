@@ -9,6 +9,7 @@ use std::os::raw::{c_char, c_int, c_uint};
 use std::os::unix::fs::MetadataExt;
 use std::ptr;
 use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::env;
 use std::path::PathBuf;
@@ -88,6 +89,7 @@ struct Config {
 }
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
+static DEBUG_OVERRIDE: AtomicBool = AtomicBool::new(false);
 
 fn with_state<F, R>(f: F) -> R
 where
@@ -120,6 +122,9 @@ fn log_error(state: &State, prefix: &str, msg: &str) {
 }
 
 fn debug_enabled() -> bool {
+    if DEBUG_OVERRIDE.load(Ordering::Relaxed) {
+        return true;
+    }
     match env::var("SUDO_AWESOME_JWT_DEBUG") {
         Ok(val) => !val.is_empty() && val != "0",
         Err(_) => false,
@@ -129,6 +134,30 @@ fn debug_enabled() -> bool {
 fn debug_log(msg: &str) {
     if debug_enabled() {
         eprintln!("sudo-awesome-jwt-policy: {msg}");
+    }
+}
+
+fn parse_debug_options(plugin_options: *const *const c_char) {
+    DEBUG_OVERRIDE.store(false, Ordering::Relaxed);
+    unsafe {
+        if plugin_options.is_null() {
+            return;
+        }
+        let mut idx = 0;
+        loop {
+            let ptr = *plugin_options.add(idx);
+            if ptr.is_null() {
+                break;
+            }
+            let s = CStr::from_ptr(ptr).to_string_lossy();
+            if s == "debug" {
+                DEBUG_OVERRIDE.store(true, Ordering::Relaxed);
+            } else if let Some(val) = s.strip_prefix("debug=") {
+                let enable = matches!(val, "1" | "true" | "yes");
+                DEBUG_OVERRIDE.store(enable, Ordering::Relaxed);
+            }
+            idx += 1;
+        }
     }
 }
 
@@ -586,6 +615,7 @@ extern "C" fn sudo_jwt_approval_open(
     errstr: *mut *const c_char,
 ) -> c_int {
     with_state(|state| {
+        parse_debug_options(plugin_options);
         state.last_err = None;
         state.user = None;
         state.uid = None;

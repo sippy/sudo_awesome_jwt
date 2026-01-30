@@ -56,9 +56,11 @@ static int add_allowlist_entries(struct policy_config *cfg, char *list, int allo
 static char *expand_vars(const char *input);
 static void plugin_log(int msg_type, const char *fmt, ...);
 
+static int g_debug_override;
+
 static int debug_enabled(void) {
     const char *dbg = getenv("SUDO_AWESOME_JWT_DEBUG");
-    return (dbg && *dbg && strcmp(dbg, "0") != 0);
+    return g_debug_override || (dbg && *dbg && strcmp(dbg, "0") != 0);
 }
 
 static void debug_log(const char *fmt, ...) {
@@ -1326,6 +1328,23 @@ int jwt_common_open(unsigned int version, sudo_printf_t sudo_plugin_printf,
     }
 
     g_printf = sudo_plugin_printf;
+    g_debug_override = 0;
+
+    if (plugin_options) {
+        for (size_t i = 0; plugin_options[i]; i++) {
+            const char *opt = plugin_options[i];
+            if (strncmp(opt, "config=", 7) == 0) {
+                config_path = opt + 7;
+            } else if (strncmp(opt, "debug=", 6) == 0) {
+                int dbg_val = 0;
+                if (parse_bool(opt + 6, &dbg_val) == 0) {
+                    g_debug_override = dbg_val;
+                }
+            } else if (strcmp(opt, "debug") == 0) {
+                g_debug_override = 1;
+            }
+        }
+    }
 
     if (debug_enabled()) {
         debug_log("sudo-awesome-jwt: plugin options:\n");
@@ -1335,15 +1354,6 @@ int jwt_common_open(unsigned int version, sudo_printf_t sudo_plugin_printf,
             }
         } else {
             debug_log("  (none)\n");
-        }
-    }
-
-    if (plugin_options) {
-        for (size_t i = 0; plugin_options[i]; i++) {
-            const char *opt = plugin_options[i];
-            if (strncmp(opt, "config=", 7) == 0) {
-                config_path = opt + 7;
-            }
         }
     }
 
