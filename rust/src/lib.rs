@@ -14,9 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::env;
 use std::path::PathBuf;
 
-const SUDO_API_VERSION_MAJOR: u32 = 1;
-const SUDO_API_VERSION_MINOR: u32 = 22;
-const SUDO_API_VERSION: u32 = (SUDO_API_VERSION_MAJOR << 16) | SUDO_API_VERSION_MINOR;
+include!(concat!(env!("OUT_DIR"), "/sudo_api_version.rs"));
 
 const SUDO_POLICY_PLUGIN: u32 = 1;
 const SUDO_APPROVAL_PLUGIN: u32 = 4;

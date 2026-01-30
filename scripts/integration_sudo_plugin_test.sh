@@ -105,17 +105,19 @@ class ApprovalPlugin(ctypes.Structure):
 
 def dump(label, sym_name, struct_cls):
     try:
-        sym = ctypes.c_void_p.in_dll(lib, sym_name)
+        inst = struct_cls.in_dll(lib, sym_name)
     except ValueError as e:
         print(f"  {label}: missing symbol {sym_name}: {e}")
         return
-    ptr = ctypes.cast(ctypes.addressof(sym), ctypes.POINTER(struct_cls))
-    inst = ptr.contents
-    print(f"  {label}: type={inst.type} version=0x{inst.version:08x}")
+    addr = ctypes.addressof(inst)
+    print(f"  {label}: addr=0x{addr:x} size={ctypes.sizeof(struct_cls)} type={inst.type} version=0x{inst.version:08x}")
     if sym_name == "policy":
-        print(f"    open={inst.open} check={inst.check_policy} init_session={inst.init_session}")
+        print("    open={0} close={1} show_version={2}".format(inst.open, inst.close, inst.show_version))
+        print("    check_policy={0} list={1} validate={2}".format(inst.check_policy, inst.list, inst.validate))
+        print("    invalidate={0} init_session={1}".format(inst.invalidate, inst.init_session))
+        print("    register_hooks={0} deregister_hooks={1} event_alloc={2}".format(inst.register_hooks, inst.deregister_hooks, inst.event_alloc))
     else:
-        print(f"    open={inst.open} check={inst.check}")
+        print("    open={0} close={1} check={2} show_version={3}".format(inst.open, inst.close, inst.check, inst.show_version))
 
 print(f"  plugin: {path}")
 dump("policy", "policy", PolicyPlugin)
