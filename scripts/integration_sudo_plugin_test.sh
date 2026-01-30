@@ -191,7 +191,7 @@ set_sudo_conf_policy() {
     log "configuring sudo.conf for policy plugin"
     write_sudo_conf_base policy "$WORKDIR/sudo.conf"
     cat >> "$WORKDIR/sudo.conf" <<'EOF_SUDO_POLICY'
-Plugin sudoers_policy PLUGIN_PATH_PLACEHOLDER config=CONFIG_PATH_PLACEHOLDER
+Plugin sudoers_policy PLUGIN_PATH_PLACEHOLDER symbol=policy config=CONFIG_PATH_PLACEHOLDER
 EOF_SUDO_POLICY
     sed -i "s|PLUGIN_PATH_PLACEHOLDER|$PLUGIN_LIB|" "$WORKDIR/sudo.conf"
     sed -i "s|CONFIG_PATH_PLACEHOLDER|$CONFIG_FILE|" "$WORKDIR/sudo.conf"
