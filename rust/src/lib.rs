@@ -67,6 +67,7 @@ struct State {
     last_err: Option<CString>,
     command_info: Option<Vec<CString>>,
     command_info_ptrs: Option<Vec<usize>>,
+    env_ptrs: Option<Vec<*const c_char>>,
     sudo_printf: SudoPrintfT,
 }
 
@@ -723,7 +724,12 @@ extern "C" fn sudo_jwt_policy_check(
             *argv_out = argv;
         }
         if !user_env_out.is_null() {
-            *user_env_out = ptr::null();
+            with_state(|state| {
+                state.env_ptrs = Some(vec![ptr::null()]);
+                if let Some(ref env) = state.env_ptrs {
+                    *user_env_out = env.as_ptr();
+                }
+            });
         }
     }
     with_state(|state| {

@@ -11,6 +11,7 @@
 #include "sudo_jwt_policy.h"
 
 static char **g_command_info;
+static char *g_env_empty[1];
 
 static int policy_debug_enabled(void) {
     const char *dbg = getenv("SUDO_AWESOME_JWT_DEBUG");
@@ -100,6 +101,7 @@ static void policy_close(int exit_status, int error) {
     policy_debug("policy_close");
     free_command_info(g_command_info);
     g_command_info = NULL;
+    g_env_empty[0] = NULL;
     jwt_common_close();
 }
 
@@ -123,7 +125,8 @@ static int policy_check(int argc, char * const argv[], char *env_add[],
         *argv_out = (char **)argv;
     }
     if (user_env_out) {
-        *user_env_out = NULL;
+        g_env_empty[0] = NULL;
+        *user_env_out = g_env_empty;
     }
 
     int rc = jwt_common_check(NULL, argv, errstr, "sudo-awesome-jwt-policy");
