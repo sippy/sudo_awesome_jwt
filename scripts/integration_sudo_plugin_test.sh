@@ -9,8 +9,11 @@ CONFIG_FILE="$WORKDIR/sudo_awesome_jwt.conf"
 TOKEN_FILE="$WORKDIR/token.jwt"
 KEY_PRIV="$WORKDIR/jwt.key"
 KEY_PUB="$WORKDIR/jwt.pub"
+SUDO_DEBUG_LOG="$WORKDIR/sudo_debug.log"
+PLUGIN_DEBUG_LOG="$WORKDIR/sudo_plugin_debug.log"
 
 PLUGIN_LIB=${SUDO_AWESOME_JWT_PLUGIN_LIB:-"$ROOT_DIR/sudo_awesome_jwt.so"}
+PLUGIN_BASENAME=$(basename "$PLUGIN_LIB")
 TEST_CMD=${SUDO_AWESOME_JWT_TEST_COMMAND:-"/usr/bin/id"}
 WAIT_SECS=${SUDO_AWESOME_JWT_TEST_WAIT:-70}
 TTL_SECS=${SUDO_AWESOME_JWT_TEST_TTL:-5}
@@ -47,6 +50,14 @@ dump_debug() {
         echo "[debug] exported symbols (filtered):"
         objdump -T "$PLUGIN_LIB" 2>/dev/null | awk '/(approval|policy)/ {print}' || true
     fi
+    if [[ -f "$SUDO_DEBUG_LOG" ]]; then
+        echo "[debug] sudo debug log:"
+        tail -n 200 "$SUDO_DEBUG_LOG" || true
+    fi
+    if [[ -f "$PLUGIN_DEBUG_LOG" ]]; then
+        echo "[debug] plugin debug log:"
+        tail -n 200 "$PLUGIN_DEBUG_LOG" || true
+    fi
 }
 
 write_sudo_conf_base() {
@@ -67,6 +78,18 @@ write_sudo_conf_base() {
     else
         : > "$dest"
     fi
+}
+
+append_debug_lines() {
+    local dest="$1"
+    if [[ "$DEBUG" != "1" ]]; then
+        return
+    fi
+    cat >> "$dest" <<EOF_SUDO_DEBUG
+Debug sudo $SUDO_DEBUG_LOG all@debug
+Debug $PLUGIN_LIB $PLUGIN_DEBUG_LOG all@debug
+Debug $PLUGIN_BASENAME $PLUGIN_DEBUG_LOG all@debug
+EOF_SUDO_DEBUG
 }
 
 run_sudo() {
@@ -215,6 +238,7 @@ EOF_SUDO_APPROVAL
     sed -i "s|PLUGIN_PATH_PLACEHOLDER|$PLUGIN_LIB|" "$WORKDIR/sudo.conf"
     sed -i "s|CONFIG_PATH_PLACEHOLDER|$CONFIG_FILE|" "$WORKDIR/sudo.conf"
     sed -i "s|DEBUG_OPT_PLACEHOLDER|$DEBUG_OPT|" "$WORKDIR/sudo.conf"
+    append_debug_lines "$WORKDIR/sudo.conf"
     run_privileged cp "$WORKDIR/sudo.conf" "$SUDO_CONF"
 }
 
@@ -227,6 +251,7 @@ EOF_SUDO_POLICY
     sed -i "s|PLUGIN_PATH_PLACEHOLDER|$PLUGIN_LIB|" "$WORKDIR/sudo.conf"
     sed -i "s|CONFIG_PATH_PLACEHOLDER|$CONFIG_FILE|" "$WORKDIR/sudo.conf"
     sed -i "s|DEBUG_OPT_PLACEHOLDER|$DEBUG_OPT|" "$WORKDIR/sudo.conf"
+    append_debug_lines "$WORKDIR/sudo.conf"
     run_privileged cp "$WORKDIR/sudo.conf" "$SUDO_CONF"
 }
 
