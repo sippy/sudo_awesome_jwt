@@ -15,6 +15,7 @@ TEST_CMD=${SUDO_AWESOME_JWT_TEST_COMMAND:-"/usr/bin/id"}
 WAIT_SECS=${SUDO_AWESOME_JWT_TEST_WAIT:-70}
 TTL_SECS=${SUDO_AWESOME_JWT_TEST_TTL:-5}
 INTERACTIVE=${SUDO_AWESOME_JWT_TEST_INTERACTIVE:-0}
+DEBUG=${SUDO_AWESOME_JWT_TEST_DEBUG:-0}
 
 log() {
     echo "[test] $*"
@@ -22,6 +23,29 @@ log() {
 
 log_err() {
     echo "[test] $*" >&2
+}
+
+debug() {
+    if [[ "$DEBUG" == "1" ]]; then
+        echo "[debug] $*"
+    fi
+}
+
+dump_debug() {
+    if [[ "$DEBUG" != "1" ]]; then
+        return
+    fi
+    echo "[debug] sudo -V:"
+    sudo -V || true
+    echo "[debug] sudo.conf plugin lines:"
+    run_privileged awk '/^Plugin/ {print NR ":" $0}' "$SUDO_CONF" || true
+    if command -v nm >/dev/null; then
+        echo "[debug] exported symbols (filtered):"
+        nm -D "$PLUGIN_LIB" 2>/dev/null | awk '/(approval|policy)/ {print}' || true
+    elif command -v objdump >/dev/null; then
+        echo "[debug] exported symbols (filtered):"
+        objdump -T "$PLUGIN_LIB" 2>/dev/null | awk '/(approval|policy)/ {print}' || true
+    fi
 }
 
 write_sudo_conf_base() {
@@ -191,7 +215,7 @@ set_sudo_conf_policy() {
     log "configuring sudo.conf for policy plugin"
     write_sudo_conf_base policy "$WORKDIR/sudo.conf"
     cat >> "$WORKDIR/sudo.conf" <<'EOF_SUDO_POLICY'
-Plugin sudoers_policy PLUGIN_PATH_PLACEHOLDER symbol=policy config=CONFIG_PATH_PLACEHOLDER
+Plugin policy PLUGIN_PATH_PLACEHOLDER config=CONFIG_PATH_PLACEHOLDER
 EOF_SUDO_POLICY
     sed -i "s|PLUGIN_PATH_PLACEHOLDER|$PLUGIN_LIB|" "$WORKDIR/sudo.conf"
     sed -i "s|CONFIG_PATH_PLACEHOLDER|$CONFIG_FILE|" "$WORKDIR/sudo.conf"
@@ -212,6 +236,7 @@ run_once() {
     log "running sudo command with fresh token"
     if ! output=$(run_sudo "$TEST_CMD" 2>&1); then
         echo "$output" >&2
+        dump_debug
         echo "expected sudo to succeed for $plugin_type with fresh token" >&2
         exit 1
     fi
@@ -222,6 +247,7 @@ run_once() {
     log "running sudo command after expiry"
     if output=$(run_sudo "$TEST_CMD" 2>&1); then
         echo "$output" >&2
+        dump_debug
         echo "expected sudo to fail for $plugin_type after token expiry" >&2
         exit 1
     fi
