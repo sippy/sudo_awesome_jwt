@@ -1456,6 +1456,9 @@ int jwt_common_check(char * const command_info[], char * const run_argv[],
     ok = 1;
 
 cleanup:
+    if (debug_enabled()) {
+        debug_log("sudo-awesome-jwt: check result=%d\n", ok);
+    }
     if (!ok) {
         const char *msg = (errstr && *errstr) ? *errstr : tmp_err;
         if (msg) {

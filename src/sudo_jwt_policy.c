@@ -66,6 +66,9 @@ static int policy_check(int argc, char * const argv[], char *env_add[],
     }
 
     int rc = jwt_common_check(NULL, argv, errstr, "sudo-awesome-jwt-policy");
+    if (policy_debug_enabled()) {
+        fprintf(stderr, "sudo-awesome-jwt-policy: policy_check rc=%d\n", rc);
+    }
     if (rc != 1 && errstr && *errstr) {
         if (policy_debug_enabled()) {
             fprintf(stderr, "sudo-awesome-jwt-policy: %s\n", *errstr);
