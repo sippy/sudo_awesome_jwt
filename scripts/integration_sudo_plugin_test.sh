@@ -20,6 +20,10 @@ log() {
     echo "[test] $*"
 }
 
+log_err() {
+    echo "[test] $*" >&2
+}
+
 write_sudo_conf_base() {
     local mode="$1"
     local dest="$2"
@@ -126,7 +130,7 @@ sed -i "s|KEY_PUB_PLACEHOLDER|$KEY_PUB|" "$CONFIG_FILE"
 
 make_jwt() {
     local ttl="$1"
-    log "generating JWT (ttl=${ttl}s)"
+    log_err "generating JWT (ttl=${ttl}s)"
     KEY_PRIV="$KEY_PRIV" TTL_SECS="$ttl" python3 - <<'PY'
 import base64
 import json
