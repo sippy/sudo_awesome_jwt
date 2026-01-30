@@ -131,9 +131,38 @@ fn debug_enabled() -> bool {
     }
 }
 
-fn debug_log(msg: &str) {
+fn debug_log_policy(msg: &str) {
     if debug_enabled() {
         eprintln!("sudo-awesome-jwt-policy: {msg}");
+    }
+}
+
+fn debug_log_approval(msg: &str) {
+    if debug_enabled() {
+        eprintln!("sudo-awesome-jwt-approval: {msg}");
+    }
+}
+
+fn debug_dump_plugin_options(plugin_options: *const *const c_char, prefix: &str) {
+    if !debug_enabled() {
+        return;
+    }
+    unsafe {
+        eprintln!("{prefix}: plugin options:");
+        if plugin_options.is_null() {
+            eprintln!("{prefix}:   (none)");
+            return;
+        }
+        let mut idx = 0;
+        loop {
+            let ptr = *plugin_options.add(idx);
+            if ptr.is_null() {
+                break;
+            }
+            let s = CStr::from_ptr(ptr).to_string_lossy();
+            eprintln!("{prefix}:   {s}");
+            idx += 1;
+        }
     }
 }
 
@@ -616,6 +645,8 @@ extern "C" fn sudo_jwt_approval_open(
 ) -> c_int {
     with_state(|state| {
         parse_debug_options(plugin_options);
+        debug_log_approval("approval_open");
+        debug_dump_plugin_options(plugin_options, "sudo-awesome-jwt-approval");
         state.last_err = None;
         state.user = None;
         state.uid = None;
@@ -659,10 +690,13 @@ extern "C" fn sudo_jwt_approval_open(
         match parse_config(&config_path, state.user.as_deref(), state.uid) {
             Ok(cfg) => {
                 state.config = Some(cfg);
+                debug_log_approval(&format!("approval_open: using config {config_path}"));
+                debug_log_approval("approval_open: config loaded");
                 1
             }
             Err(e) => {
                 set_err(state, errstr, &e);
+                debug_log_approval(&format!("approval_open: {e}"));
                 -1
             }
         }
@@ -670,6 +704,7 @@ extern "C" fn sudo_jwt_approval_open(
 }
 
 extern "C" fn sudo_jwt_approval_close() {
+    debug_log_approval("approval_close");
     with_state(|state| {
         state.config = None;
         state.user = None;
@@ -686,23 +721,29 @@ extern "C" fn sudo_jwt_approval_check(
     _run_envp: *const *const c_char,
     errstr: *mut *const c_char,
 ) -> c_int {
+    debug_log_approval("approval_check");
     with_state(|state| {
         let Some(ref cfg) = state.config else {
             set_err(state, errstr, "policy not initialized");
+            debug_log_approval("approval_check: policy not initialized");
             return -1;
         };
-        match jwt_check_internal(state, cfg, command_info, run_argv, cfg.require_tty) {
+        let rc = match jwt_check_internal(state, cfg, command_info, run_argv, cfg.require_tty) {
             Ok(()) => 1,
             Err(e) => {
                 set_err(state, errstr, &e);
                 log_error(state, "sudo-awesome-jwt-approval", &e);
+                debug_log_approval(&format!("approval_check: {e}"));
                 0
             }
-        }
+        };
+        debug_log_approval(&format!("approval_check rc={rc}"));
+        rc
     })
 }
 
 extern "C" fn sudo_jwt_approval_show_version(_verbose: c_int) -> c_int {
+    debug_log_approval("approval_show_version");
     1
 }
 
@@ -727,17 +768,19 @@ extern "C" fn sudo_jwt_policy_open(
     plugin_options: *const *const c_char,
     errstr: *mut *const c_char,
 ) -> c_int {
-    debug_log("policy_open");
+    parse_debug_options(plugin_options);
+    debug_log_policy("policy_open");
+    debug_dump_plugin_options(plugin_options, "sudo-awesome-jwt-policy");
     sudo_jwt_approval_open(version, None, sudo_plugin_printf, ptr::null(), user_info, 0, ptr::null(), ptr::null(), plugin_options, errstr)
 }
 
 extern "C" fn sudo_jwt_policy_close(_exit_status: c_int, _error: c_int) {
-    debug_log("policy_close");
+    debug_log_policy("policy_close");
     sudo_jwt_approval_close();
 }
 
 extern "C" fn sudo_jwt_policy_show_version(_verbose: c_int) -> c_int {
-    debug_log("policy_show_version");
+    debug_log_policy("policy_show_version");
     1
 }
 
@@ -750,7 +793,7 @@ extern "C" fn sudo_jwt_policy_check(
     user_env_out: *mut *const *const c_char,
     errstr: *mut *const c_char,
 ) -> c_int {
-    debug_log("policy_check");
+    debug_log_policy("policy_check");
     unsafe {
         if !command_info.is_null() {
             with_state(|state| {
@@ -773,22 +816,26 @@ extern "C" fn sudo_jwt_policy_check(
                     *user_env_out = env.as_ptr() as *const *const c_char;
                 }
             });
-            debug_log("envp set to empty list");
+            debug_log_policy("envp set to empty list");
         }
     }
     with_state(|state| {
         let Some(ref cfg) = state.config else {
             set_err(state, errstr, "policy not initialized");
+            debug_log_policy("policy_check: policy not initialized");
             return -1;
         };
-        match jwt_check_internal(state, cfg, ptr::null(), argv, cfg.require_tty) {
+        let rc = match jwt_check_internal(state, cfg, ptr::null(), argv, cfg.require_tty) {
             Ok(()) => 1,
             Err(e) => {
                 set_err(state, errstr, &e);
                 log_error(state, "sudo-awesome-jwt-policy", &e);
+                debug_log_policy(&format!("policy_check: {e}"));
                 0
             }
-        }
+        };
+        debug_log_policy(&format!("policy_check rc={rc}"));
+        rc
     })
 }
 
@@ -799,12 +846,12 @@ extern "C" fn sudo_jwt_policy_list(
     _user: *const c_char,
     _errstr: *mut *const c_char,
 ) -> c_int {
-    debug_log("policy_list");
+    debug_log_policy("policy_list");
     1
 }
 
 extern "C" fn sudo_jwt_policy_validate(_errstr: *mut *const c_char) -> c_int {
-    debug_log("policy_validate");
+    debug_log_policy("policy_validate");
     1
 }
 
@@ -815,7 +862,7 @@ extern "C" fn sudo_jwt_policy_init_session(
     _user_env_out: *mut *const *const c_char,
     _errstr: *mut *const c_char,
 ) -> c_int {
-    debug_log("policy_init_session");
+    debug_log_policy("policy_init_session");
     1
 }
 
