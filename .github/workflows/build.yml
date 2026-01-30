@@ -25,3 +25,9 @@ jobs:
       - name: Build Rust plugin
         run: cargo build --release
         working-directory: rust
+
+      - name: Integration test (C plugin)
+        run: sudo /usr/bin/env SUDO_AWESOME_JWT_TEST_TTL=1 SUDO_AWESOME_JWT_TEST_WAIT=65 scripts/integration_sudo_plugin_test.sh
+
+      - name: Integration test (Rust plugin)
+        run: sudo /usr/bin/env SUDO_AWESOME_JWT_PLUGIN_LIB=rust/target/release/libsudo_awesome_jwt_rust.so SUDO_AWESOME_JWT_TEST_TTL=1 SUDO_AWESOME_JWT_TEST_WAIT=65 scripts/integration_sudo_plugin_test.sh
