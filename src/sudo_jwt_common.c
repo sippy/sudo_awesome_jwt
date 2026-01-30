@@ -67,13 +67,7 @@ static void debug_log(const char *fmt, ...) {
     }
     va_list ap;
     va_start(ap, fmt);
-    if (g_printf) {
-        char buf[512];
-        vsnprintf(buf, sizeof(buf), fmt, ap);
-        plugin_log(SUDO_CONV_INFO_MSG, "%s", buf);
-    } else {
-        vfprintf(stderr, fmt, ap);
-    }
+    vfprintf(stderr, fmt, ap);
     va_end(ap);
 }
 
@@ -1333,6 +1327,17 @@ int jwt_common_open(unsigned int version, sudo_printf_t sudo_plugin_printf,
 
     g_printf = sudo_plugin_printf;
 
+    if (debug_enabled()) {
+        debug_log("sudo-awesome-jwt: plugin options:\n");
+        if (plugin_options) {
+            for (size_t i = 0; plugin_options[i]; i++) {
+                debug_log("  %s\n", plugin_options[i]);
+            }
+        } else {
+            debug_log("  (none)\n");
+        }
+    }
+
     if (plugin_options) {
         for (size_t i = 0; plugin_options[i]; i++) {
             const char *opt = plugin_options[i];
@@ -1408,6 +1413,7 @@ int jwt_common_check(char * const command_info[], char * const run_argv[],
 
     if (!g_cfg) {
         *err_out = "policy not initialized";
+        debug_log("sudo-awesome-jwt: policy not initialized\n");
         return -1;
     }
 
