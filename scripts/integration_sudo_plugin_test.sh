@@ -39,8 +39,7 @@ dump_debug() {
     if [[ "$DEBUG" != "1" ]]; then
         return
     fi
-    echo "[debug] sudo -V:"
-    sudo -V || true
+    FILTER="${1:-"tail -n 2000"}"
     echo "[debug] sudo.conf plugin lines:"
     run_privileged awk '/^Plugin/ {print NR ":" $0}' "$SUDO_CONF" || true
     if command -v nm >/dev/null; then
@@ -51,13 +50,80 @@ dump_debug() {
         objdump -T "$PLUGIN_LIB" 2>/dev/null | awk '/(approval|policy)/ {print}' || true
     fi
     if [[ -f "$SUDO_DEBUG_LOG" ]]; then
-        echo "[debug] sudo debug log:"
-        tail -n 200 "$SUDO_DEBUG_LOG" || true
+        echo "[debug] sudo debug log path: $SUDO_DEBUG_LOG"
+        echo "[debug] sudo debug log (plugin/load):"
+        grep -E "sudo_load_plugin|sudo_load_plugins|dlopen|dlsym|plugin|policy" "$SUDO_DEBUG_LOG" | ${FILTER} || true
+        echo "[debug] sudo debug log (tail):"
+        ${FILTER} "$SUDO_DEBUG_LOG" || true
     fi
     if [[ -f "$PLUGIN_DEBUG_LOG" ]]; then
         echo "[debug] plugin debug log:"
         tail -n 200 "$PLUGIN_DEBUG_LOG" || true
     fi
+    if command -v python3 >/dev/null; then
+        echo "[debug] plugin struct check:"
+        PLUGIN_LIB="$PLUGIN_LIB" python3 - <<'PY' || true
+import ctypes
+import os
+
+path = os.environ.get("PLUGIN_LIB", "")
+if not path:
+    print("  PLUGIN_LIB not set")
+    raise SystemExit(0)
+try:
+    lib = ctypes.CDLL(path)
+except OSError as e:
+    print(f"  dlopen failed: {e}")
+    raise SystemExit(0)
+
+class PolicyPlugin(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint),
+        ("version", ctypes.c_uint),
+        ("open", ctypes.c_void_p),
+        ("close", ctypes.c_void_p),
+        ("show_version", ctypes.c_void_p),
+        ("check_policy", ctypes.c_void_p),
+        ("list", ctypes.c_void_p),
+        ("validate", ctypes.c_void_p),
+        ("invalidate", ctypes.c_void_p),
+        ("init_session", ctypes.c_void_p),
+        ("register_hooks", ctypes.c_void_p),
+        ("deregister_hooks", ctypes.c_void_p),
+        ("event_alloc", ctypes.c_void_p),
+    ]
+
+class ApprovalPlugin(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint),
+        ("version", ctypes.c_uint),
+        ("open", ctypes.c_void_p),
+        ("close", ctypes.c_void_p),
+        ("check", ctypes.c_void_p),
+        ("show_version", ctypes.c_void_p),
+    ]
+
+def dump(label, sym_name, struct_cls):
+    try:
+        sym = ctypes.c_void_p.in_dll(lib, sym_name)
+    except ValueError as e:
+        print(f"  {label}: missing symbol {sym_name}: {e}")
+        return
+    ptr = ctypes.cast(ctypes.addressof(sym), ctypes.POINTER(struct_cls))
+    inst = ptr.contents
+    print(f"  {label}: type={inst.type} version=0x{inst.version:08x}")
+    if sym_name == "policy":
+        print(f"    open={inst.open} check={inst.check_policy} init_session={inst.init_session}")
+    else:
+        print(f"    open={inst.open} check={inst.check}")
+
+print(f"  plugin: {path}")
+dump("policy", "policy", PolicyPlugin)
+dump("approval", "approval", ApprovalPlugin)
+PY
+    fi
+    echo "[debug] sudo conf"
+    cat "${SUDO_CONF}"
 }
 
 write_sudo_conf_base() {
@@ -69,7 +135,7 @@ write_sudo_conf_base() {
                 if (mode == "approval" && $2 == "approval") {
                     next
                 }
-                if (mode == "policy" && ($2 == "sudoers_policy" || $2 == "policy")) {
+                if (mode == "policy" && $2 == "policy") {
                     next
                 }
             }
@@ -272,6 +338,8 @@ run_once() {
         dump_debug
         echo "expected sudo to succeed for $plugin_type with fresh token" >&2
         exit 1
+    else
+        dump_debug "head -n 1000"
     fi
 
     log "waiting $WAIT_SECS seconds for token expiry"
