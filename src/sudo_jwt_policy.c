@@ -36,7 +36,7 @@ static int policy_check(int argc, char * const argv[], char *env_add[],
         *command_info = NULL;
     }
     if (argv_out) {
-        *argv_out = NULL;
+        *argv_out = (char **)argv;
     }
     if (user_env_out) {
         *user_env_out = NULL;

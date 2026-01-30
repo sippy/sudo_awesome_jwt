@@ -670,7 +670,7 @@ extern "C" fn sudo_jwt_policy_check(
             *command_info = ptr::null();
         }
         if !argv_out.is_null() {
-            *argv_out = ptr::null();
+            *argv_out = argv;
         }
         if !user_env_out.is_null() {
             *user_env_out = ptr::null();
