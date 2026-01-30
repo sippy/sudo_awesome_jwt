@@ -11,6 +11,7 @@ use std::ptr;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::env;
+use std::path::PathBuf;
 
 const SUDO_API_VERSION_MAJOR: u32 = 1;
 const SUDO_API_VERSION_MINOR: u32 = 22;
@@ -64,6 +65,8 @@ struct State {
     uid: Option<u32>,
     tty: Option<String>,
     last_err: Option<CString>,
+    command_info: Option<Vec<CString>>,
+    command_info_ptrs: Option<Vec<*const c_char>>,
     sudo_printf: SudoPrintfT,
 }
 
@@ -126,6 +129,28 @@ fn debug_log(msg: &str) {
     if debug_enabled() {
         eprintln!("sudo-awesome-jwt-policy: {msg}");
     }
+}
+
+fn build_command_info(argv: *const *const c_char) -> (Vec<CString>, Vec<*const c_char>) {
+    let cmd = unsafe {
+        if !argv.is_null() && !(*argv).is_null() {
+            CStr::from_ptr(*argv).to_string_lossy().into_owned()
+        } else {
+            String::new()
+        }
+    };
+    let cwd = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("/"))
+        .to_string_lossy()
+        .into_owned();
+    let mut entries = Vec::new();
+    entries.push(CString::new(format!("command={cmd}")).unwrap());
+    entries.push(CString::new(format!("command_path={cmd}")).unwrap());
+    entries.push(CString::new("runas_user=root").unwrap());
+    entries.push(CString::new(format!("cwd={cwd}")).unwrap());
+    let mut ptrs: Vec<*const c_char> = entries.iter().map(|c| c.as_ptr()).collect();
+    ptrs.push(ptr::null());
+    (entries, ptrs)
 }
 
 fn parse_bool(s: &str) -> Option<bool> {
@@ -685,7 +710,14 @@ extern "C" fn sudo_jwt_policy_check(
     debug_log("policy_check");
     unsafe {
         if !command_info.is_null() {
-            *command_info = ptr::null();
+            with_state(|state| {
+                let (entries, ptrs) = build_command_info(argv);
+                state.command_info = Some(entries);
+                state.command_info_ptrs = Some(ptrs);
+                if let Some(ref ptrs) = state.command_info_ptrs {
+                    *command_info = ptrs.as_ptr();
+                }
+            });
         }
         if !argv_out.is_null() {
             *argv_out = argv;

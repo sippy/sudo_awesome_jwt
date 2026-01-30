@@ -3,10 +3,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <unistd.h>
 #include <sudo_plugin.h>
 
 #include "sudo_jwt_common.h"
 #include "sudo_jwt_policy.h"
+
+static char **g_command_info;
 
 static int policy_debug_enabled(void) {
     const char *dbg = getenv("SUDO_AWESOME_JWT_DEBUG");
@@ -17,6 +21,59 @@ static void policy_debug(const char *msg) {
     if (policy_debug_enabled()) {
         fprintf(stderr, "sudo-awesome-jwt-policy: %s\n", msg);
     }
+}
+
+static void free_command_info(char **info) {
+    if (!info) {
+        return;
+    }
+    for (size_t i = 0; info[i]; i++) {
+        free(info[i]);
+    }
+    free(info);
+}
+
+static char *dup_kv(const char *key, const char *val) {
+    size_t key_len = strlen(key);
+    size_t val_len = val ? strlen(val) : 0;
+    size_t total = key_len + 1 + val_len + 1;
+    char *out = malloc(total);
+    if (!out) {
+        return NULL;
+    }
+    if (val) {
+        snprintf(out, total, "%s=%s", key, val);
+    } else {
+        snprintf(out, total, "%s=", key);
+    }
+    return out;
+}
+
+static char **build_command_info(char * const argv[]) {
+    const char *cmd = (argv && argv[0]) ? argv[0] : "";
+    char cwd_buf[PATH_MAX];
+    const char *cwd = getcwd(cwd_buf, sizeof(cwd_buf));
+    if (!cwd) {
+        cwd = "/";
+    }
+
+    char **info = calloc(5, sizeof(char *));
+    if (!info) {
+        return NULL;
+    }
+    info[0] = dup_kv("command", cmd);
+    info[1] = dup_kv("command_path", cmd);
+    info[2] = dup_kv("runas_user", "root");
+    info[3] = dup_kv("cwd", cwd);
+    info[4] = NULL;
+
+    for (size_t i = 0; i < 4; i++) {
+        if (!info[i]) {
+            free_command_info(info);
+            return NULL;
+        }
+    }
+    return info;
 }
 
 static int policy_open(unsigned int version, sudo_conv_t conversation,
@@ -41,6 +98,8 @@ static void policy_close(int exit_status, int error) {
     (void)exit_status;
     (void)error;
     policy_debug("policy_close");
+    free_command_info(g_command_info);
+    g_command_info = NULL;
     jwt_common_close();
 }
 
@@ -56,7 +115,9 @@ static int policy_check(int argc, char * const argv[], char *env_add[],
 
     policy_debug("policy_check");
     if (command_info) {
-        *command_info = NULL;
+        free_command_info(g_command_info);
+        g_command_info = build_command_info(argv);
+        *command_info = g_command_info;
     }
     if (argv_out) {
         *argv_out = (char **)argv;
