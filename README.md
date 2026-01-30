@@ -81,6 +81,7 @@ Optional:
 - `only_user` (if set, enforce JWT only for this user)
 - `only_uid` (if set, enforce JWT only for this uid)
 - `command_allowlist` (comma-separated list of absolute command paths that require JWT; if set, other commands bypass the plugin). If unquoted and begins with `/`, it is treated as a file path and the file contents are parsed as the list.
+- `${user}` and `${uid}` are expanded in config values and allowlist entries. Single-quote a value (or allowlist entry) to disable expansion, including when the allowlist is read from a file.
 - `audience` may be a quoted string or an absolute path to a file containing the audience value
 
 ## JWT requirements
