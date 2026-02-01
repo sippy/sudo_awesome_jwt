@@ -72,6 +72,7 @@ pub(crate) struct State {
     pub(crate) runas_user: Option<String>,
     pub(crate) runas_uid: Option<u32>,
     pub(crate) runas_gid: Option<u32>,
+    pub(crate) setenv_requested: bool,
     pub(crate) sudo_printf: SudoPrintfT,
 }
 
@@ -88,7 +89,6 @@ pub(crate) struct Config {
     pub(crate) require_tty: bool,
     pub(crate) only_user: Option<String>,
     pub(crate) only_uid: Option<u32>,
-    pub(crate) command_allowlist: Vec<String>,
 }
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -203,6 +203,7 @@ pub(crate) fn debug_log_approval(msg: &str) {
         state.runas_user = None;
         state.runas_uid = None;
         state.runas_gid = None;
+        state.setenv_requested = false;
         debug_dump_plugin_options(state, plugin_options, prefix);
         let major = sudo_api_version_get_major(version);
         let minor = sudo_api_version_get_minor(version);
@@ -335,6 +336,7 @@ pub(crate) fn sudo_jwt_close_internal(close_label: &str, log_fn: fn(&State, &str
         state.runas_user = None;
         state.runas_uid = None;
         state.runas_gid = None;
+        state.setenv_requested = false;
         state.sudo_printf = None;
     });
 }
@@ -524,7 +526,7 @@ pub(crate) fn build_argv_out(argv: *const *const c_char, resolved: &str) -> Opti
     Some((entries, ptrs))
 }
 
-fn build_user_env(user_env: *const *const c_char) -> Option<(Vec<CString>, Vec<usize>)> {
+pub(crate) fn build_user_env(user_env: *const *const c_char) -> Option<(Vec<CString>, Vec<usize>)> {
     if user_env.is_null() {
         return None;
     }
@@ -617,30 +619,6 @@ fn expand_vars(input: &str, user: Option<&str>, uid: Option<u32>) -> Option<Stri
     }
 }
 
-fn parse_allowlist(text: &str, allow_expand: bool, user: Option<&str>, uid: Option<u32>) -> Vec<String> {
-    let mut out = Vec::new();
-    for raw in text.split(|c: char| c == ',' || c == '\n' || c == '\r') {
-        let mut entry = raw.trim().to_string();
-        if entry.is_empty() {
-            continue;
-        }
-        let mut quote_char = None;
-        if (entry.starts_with('\"') && entry.ends_with('\"')) || (entry.starts_with('\'') && entry.ends_with('\'')) {
-            quote_char = entry.chars().next();
-            entry = entry[1..entry.len() - 1].trim().to_string();
-        }
-        if allow_expand && quote_char != Some('\'') {
-            if let Some(expanded) = expand_vars(&entry, user, uid) {
-                entry = expanded;
-            }
-        }
-        if !entry.is_empty() {
-            out.push(entry);
-        }
-    }
-    out
-}
-
 fn parse_config(path: &str, user: Option<&str>, uid: Option<u32>) -> Result<Config, String> {
     let data = std::fs::read_to_string(path).map_err(|_| "unable to open policy config".to_string())?;
     let mut cfg = Config {
@@ -655,7 +633,6 @@ fn parse_config(path: &str, user: Option<&str>, uid: Option<u32>) -> Result<Conf
         require_tty: false,
         only_user: None,
         only_uid: None,
-        command_allowlist: Vec::new(),
     };
 
     for raw in data.lines() {
@@ -717,15 +694,6 @@ fn parse_config(path: &str, user: Option<&str>, uid: Option<u32>) -> Result<Conf
                     cfg.only_uid = Some(uid);
                 }
             }
-            "command_allowlist" | "command_allowlist_csv" => {
-                let allow_expand = quote_char != Some('\'');
-                if quote_char.is_none() && val.starts_with('/') {
-                    let text = read_text_file_labeled(&val, MAX_ALLOWLIST_BYTES, "command allowlist")?;
-                    cfg.command_allowlist.extend(parse_allowlist(&text, allow_expand, user, uid));
-                } else {
-                    cfg.command_allowlist.extend(parse_allowlist(&val, allow_expand, user, uid));
-                }
-            }
             _ => {}
         }
     }
@@ -760,7 +728,6 @@ fn read_text_file(path: &str, max_len: u64) -> Result<String, String> {
     read_text_file_labeled(path, max_len, "audience")
 }
 
-// replaced by parse_allowlist(text, allow_expand, user, uid)
 
 fn read_token(path: &str) -> Result<String, String> {
     let meta = match std::fs::metadata(path) {
@@ -804,17 +771,24 @@ fn command_from_info(command_info: *const *const c_char, run_argv: *const *const
     unsafe {
         if !command_info.is_null() {
             let mut idx = 0;
+            let mut command = None;
+            let mut command_path = None;
             loop {
                 let ptr = *command_info.add(idx);
                 if ptr.is_null() { break; }
                 let s = CStr::from_ptr(ptr).to_string_lossy();
-                if let Some(val) = s.strip_prefix("command=") {
-                    return Some(val.to_string());
-                }
                 if let Some(val) = s.strip_prefix("command_path=") {
-                    return Some(val.to_string());
+                    command_path = Some(val.to_string());
+                } else if let Some(val) = s.strip_prefix("command=") {
+                    command = Some(val.to_string());
                 }
                 idx += 1;
+            }
+            if command_path.is_some() {
+                return command_path;
+            }
+            if command.is_some() {
+                return command;
             }
         }
         if !run_argv.is_null() {
@@ -827,14 +801,113 @@ fn command_from_info(command_info: *const *const c_char, run_argv: *const *const
     None
 }
 
-fn command_requires_jwt(cfg: &Config, command_info: *const *const c_char, run_argv: *const *const c_char) -> bool {
-    if cfg.command_allowlist.is_empty() {
-        return true;
+fn runas_from_info(command_info: *const *const c_char) -> (Option<String>, Option<u32>, Option<u32>) {
+    let mut runas_user = None;
+    let mut runas_uid = None;
+    let mut runas_gid = None;
+    unsafe {
+        if !command_info.is_null() {
+            let mut idx = 0;
+            loop {
+                let ptr = *command_info.add(idx);
+                if ptr.is_null() { break; }
+                let s = CStr::from_ptr(ptr).to_string_lossy();
+                if let Some(val) = s.strip_prefix("runas_user=") {
+                    if !val.is_empty() {
+                        runas_user = Some(val.to_string());
+                    }
+                } else if let Some(val) = s.strip_prefix("runas_uid=") {
+                    if let Ok(parsed) = val.parse::<u32>() {
+                        runas_uid = Some(parsed);
+                    }
+                } else if let Some(val) = s.strip_prefix("runas_gid=") {
+                    if let Ok(parsed) = val.parse::<u32>() {
+                        runas_gid = Some(parsed);
+                    }
+                }
+                idx += 1;
+            }
+        }
     }
-    let Some(cmd) = command_from_info(command_info, run_argv) else {
-        return true;
-    };
-    cfg.command_allowlist.iter().any(|c| c == &cmd)
+    (runas_user, runas_uid, runas_gid)
+}
+
+fn parse_setenv(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(b) => Some(*b),
+        Value::Number(n) => n.as_i64().map(|v| v != 0),
+        Value::String(s) => parse_bool(&s.to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+fn resolve_command_for_match(state: &State, command_info: *const *const c_char, run_argv: *const *const c_char) -> Result<String, String> {
+    let mut cmd = command_from_info(command_info, run_argv).ok_or_else(|| "missing command".to_string())?;
+    if !cmd.contains('/') {
+        if let Some(resolved) = resolve_command_path(&cmd, state.user_env.as_deref()) {
+            cmd = resolved;
+        }
+    }
+    if let Ok(canon) = std::fs::canonicalize(&cmd) {
+        cmd = canon.to_string_lossy().to_string();
+    }
+    Ok(cmd)
+}
+
+fn command_allowed_by_jwt(state: &State, payload: &Value, command_info: *const *const c_char, run_argv: *const *const c_char, policy_mode: bool) -> Result<(), String> {
+    let cmd = resolve_command_for_match(state, command_info, run_argv)?;
+    if debug_enabled() {
+        log_debug(state, SUDO_AWESOME_JWT_NAME, &format!("resolved command={cmd}"));
+    }
+    let cmds = payload.get("cmds").ok_or_else(|| "missing cmds".to_string())?;
+    let cmds = cmds.as_array().ok_or_else(|| "invalid cmds".to_string())?;
+    let (runas_user, runas_uid, runas_gid) = runas_from_info(command_info);
+    if policy_mode {
+        if cmds.iter().any(|entry| entry.get("setenv").is_some()) {
+            return Err("setenv not supported in policy".to_string());
+        }
+    }
+    let actual_setenv = if policy_mode { false } else { state.setenv_requested };
+
+    for entry in cmds {
+        let Some(obj) = entry.as_object() else { continue; };
+        let Some(path) = obj.get("path").and_then(|v| v.as_str()) else { continue; };
+        if path != cmd {
+            continue;
+        }
+        if let Some(req_user) = obj.get("runas_user").and_then(|v| v.as_str()) {
+            if let Some(actual) = runas_user.as_deref() {
+                if actual != req_user {
+                    continue;
+                }
+            }
+        }
+        if let Some(req_uid) = obj.get("runas_uid").and_then(|v| v.as_u64()) {
+            if let Some(actual_uid) = runas_uid {
+                if actual_uid != req_uid as u32 {
+                    continue;
+                }
+            }
+        }
+        if let Some(req_gid) = obj.get("runas_gid").and_then(|v| v.as_u64()) {
+            if let Some(actual_gid) = runas_gid {
+                if actual_gid != req_gid as u32 {
+                    continue;
+                }
+            }
+        }
+        let expected_setenv = if let Some(val) = obj.get("setenv") {
+            parse_setenv(val).ok_or_else(|| "invalid setenv".to_string())?
+        } else {
+            false
+        };
+        if expected_setenv != actual_setenv {
+            continue;
+        }
+        return Ok(());
+    }
+
+    Err("command not permitted".to_string())
 }
 
 fn has_scope(scope_val: &Value, required: &str) -> bool {
@@ -893,7 +966,7 @@ fn verify_jwt(cfg: &Config, token: &str) -> Result<Value, String> {
     Ok(payload)
 }
 
-fn check_claims(cfg: &Config, payload: &Value) -> Result<(), String> {
+fn check_claims(cfg: &Config, payload: &Value, expected_user: &str) -> Result<(), String> {
     let iss = payload.get("iss").and_then(|v| v.as_str()).ok_or_else(|| "missing iss".to_string())?;
     if iss != cfg.issuer {
         return Err("issuer mismatch".to_string());
@@ -902,6 +975,11 @@ fn check_claims(cfg: &Config, payload: &Value) -> Result<(), String> {
     let aud = payload.get("aud").ok_or_else(|| "missing aud".to_string())?;
     if !aud_matches(aud, &cfg.audience) {
         return Err("audience mismatch".to_string());
+    }
+
+    let sub = payload.get("sub").and_then(|v| v.as_str()).ok_or_else(|| "missing sub".to_string())?;
+    if sub != expected_user {
+        return Err("sub mismatch".to_string());
     }
 
     let exp = payload.get("exp").and_then(|v| v.as_i64()).ok_or_else(|| "missing exp".to_string())?;
@@ -939,12 +1017,8 @@ fn check_claims(cfg: &Config, payload: &Value) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn jwt_check_internal(state: &State, cfg: &Config, command_info: *const *const c_char, run_argv: *const *const c_char, require_tty: bool) -> Result<(), String> {
+pub(crate) fn jwt_check_internal(state: &State, cfg: &Config, command_info: *const *const c_char, run_argv: *const *const c_char, require_tty: bool, policy_mode: bool) -> Result<(), String> {
     if !should_enforce_user(state, cfg) {
-        return Ok(());
-    }
-
-    if !command_requires_jwt(cfg, command_info, run_argv) {
         return Ok(());
     }
 
@@ -963,6 +1037,18 @@ pub(crate) fn jwt_check_internal(state: &State, cfg: &Config, command_info: *con
     };
 
     let payload = verify_jwt(cfg, &token)?;
-    check_claims(cfg, &payload)?;
+    let user = state.user.as_deref().ok_or_else(|| "missing user".to_string())?;
+    if let Err(e) = check_claims(cfg, &payload, user) {
+        if debug_enabled() {
+            log_debug(state, SUDO_AWESOME_JWT_NAME, &format!("jwt payload={payload}"));
+        }
+        return Err(e);
+    }
+    if let Err(e) = command_allowed_by_jwt(state, &payload, command_info, run_argv, policy_mode) {
+        if debug_enabled() {
+            log_debug(state, SUDO_AWESOME_JWT_NAME, &format!("jwt payload={payload}"));
+        }
+        return Err(e);
+    }
     Ok(())
 }

@@ -390,7 +390,7 @@ static int policy_check(int argc, char * const argv[], char *env_add[],
         }
     }
 
-    int rc = jwt_common_check(NULL, argv, errstr, SUDO_AWESOME_JWT_POLICY);
+    int rc = jwt_common_check(g_command_info, argv, errstr, SUDO_AWESOME_JWT_POLICY);
     jwt_common_debug("%s:policy_check rc=%d\n", SUDO_AWESOME_JWT_POLICY, rc);
     if (rc != 1 && errstr && *errstr) {
         jwt_common_debug("%s:%s\n", SUDO_AWESOME_JWT_POLICY, *errstr);

@@ -26,7 +26,6 @@ fn main() {
         .unwrap_or_else(|| "sudo".to_string());
     let max_token = parse_u64(macros.get("MAX_TOKEN_BYTES")).unwrap_or(16 * 1024);
     let max_aud = parse_u64(macros.get("MAX_AUDIENCE_BYTES")).unwrap_or(1024);
-    let max_allow = parse_u64(macros.get("MAX_ALLOWLIST_BYTES")).unwrap_or(4096);
     let clock_skew = parse_i64(macros.get("CLOCK_SKEW_SECONDS")).unwrap_or(60);
     let plugin_version = parse_str(macros.get("SUDO_AWESOME_JWT_VERSION"))
         .unwrap_or_else(|| "0.1.0".to_string());
@@ -54,7 +53,6 @@ pub const DEFAULT_CONFIG_PATH: &str = \"{default_config}\";\n\
 pub const DEFAULT_SCOPE: &str = \"{default_scope}\";\n\
 pub const MAX_TOKEN_BYTES: u64 = {max_token};\n\
 pub const MAX_AUDIENCE_BYTES: u64 = {max_aud};\n\
-pub const MAX_ALLOWLIST_BYTES: u64 = {max_allow};\n\
 pub const CLOCK_SKEW_SECONDS: i64 = {clock_skew};\n\
 pub const SUDO_AWESOME_JWT_VERSION: &str = \"{plugin_version}\";\n\
 pub const SUDO_AWESOME_JWT_NAME: &str = \"{plugin_name}\";\n\

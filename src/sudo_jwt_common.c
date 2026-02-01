@@ -26,8 +26,6 @@ struct policy_config {
     char *audience;
     char *scope;
     char *host;
-    char **command_allowlist;
-    size_t command_allowlist_len;
     long max_ttl;
     char *only_user;
     uid_t only_uid;
@@ -42,11 +40,11 @@ static char *g_tty;
 static char *g_user;
 static uid_t g_uid;
 static int g_uid_valid;
+static char *const *g_run_envp;
+static int g_setenv_requested;
 static int parse_bool(const char *s, int *out);
 
 static int read_text_file(const char *path, size_t max_len, char **out, const char **errstr);
-static int read_allowlist_file(const char *path, size_t max_len, char **out, const char **errstr);
-static int add_allowlist_entries(struct policy_config *cfg, char *list, int allow_expand, const char **errstr);
 static char *expand_vars(const char *input);
 static void plugin_log_v(int msg_type, const char *fmt, va_list ap);
 static void plugin_log(int msg_type, const char *fmt, ...);
@@ -58,14 +56,23 @@ static int debug_enabled(void) {
     return g_debug_override || (dbg && *dbg && strcmp(dbg, "0") != 0);
 }
 
+void jwt_common_set_run_envp(char * const envp[]) {
+    g_run_envp = envp;
+}
+
+void jwt_common_set_setenv_requested(int val) {
+    g_setenv_requested = val ? 1 : 0;
+}
+
 static void debug_log(const char *fmt, ...) {
     if (!debug_enabled()) {
         return;
     }
     va_list ap;
     va_start(ap, fmt);
-    plugin_log_v(SUDO_CONV_ERROR_MSG, fmt, ap);
+    vfprintf(stderr, fmt, ap);
     va_end(ap);
+    fflush(stderr);
 }
 
 static void plugin_log_v(int msg_type, const char *fmt, va_list ap) {
@@ -109,8 +116,9 @@ void jwt_common_debug(const char *fmt, ...) {
     }
     va_list ap;
     va_start(ap, fmt);
-    plugin_log_v(SUDO_CONV_ERROR_MSG, fmt, ap);
+    vfprintf(stderr, fmt, ap);
     va_end(ap);
+    fflush(stderr);
 }
 
 static void *xmalloc(size_t size) {
@@ -266,12 +274,6 @@ static void free_config(struct policy_config *cfg) {
     free(cfg->audience);
     free(cfg->scope);
     free(cfg->host);
-    if (cfg->command_allowlist) {
-        for (size_t i = 0; i < cfg->command_allowlist_len; i++) {
-            free(cfg->command_allowlist[i]);
-        }
-        free(cfg->command_allowlist);
-    }
     free(cfg->only_user);
     free(cfg);
 }
@@ -342,46 +344,6 @@ static int load_config(const char *path, struct policy_config **out, const char 
         }
 
         val = strip_quotes(val);
-
-        if (strcasecmp(key, "command_allowlist") == 0 || strcasecmp(key, "command_allowlist_csv") == 0) {
-            char *path_val = val;
-            char *path_expanded = NULL;
-            int allow_expand = (quote_char != '\'');
-
-            if (allow_expand) {
-                path_expanded = expand_vars(val);
-                if (path_expanded) {
-                    path_val = path_expanded;
-                }
-            }
-
-            if (!val_quoted && path_val[0] == '/') {
-                char *list = NULL;
-                if (read_allowlist_file(path_val, MAX_ALLOWLIST_BYTES, &list, errstr) != 0) {
-                    free(path_expanded);
-                    fclose(fp);
-                    free_config(cfg);
-                    return -1;
-                }
-                if (add_allowlist_entries(cfg, list, allow_expand, errstr) != 0) {
-                    free(list);
-                    free(path_expanded);
-                    fclose(fp);
-                    free_config(cfg);
-                    return -1;
-                }
-                free(list);
-            } else {
-                if (add_allowlist_entries(cfg, path_val, allow_expand, errstr) != 0) {
-                    free(path_expanded);
-                    fclose(fp);
-                    free_config(cfg);
-                    return -1;
-                }
-            }
-            free(path_expanded);
-            continue;
-        }
 
         char *expanded = NULL;
         const char *val_use = val;
@@ -480,6 +442,13 @@ static const char *get_kv(char * const list[], const char *key) {
         }
     }
     return NULL;
+}
+
+static const char *get_run_env(const char *key) {
+    if (!g_run_envp || !key) {
+        return NULL;
+    }
+    return get_kv((char * const *)g_run_envp, key);
 }
 
 static int read_file(const char *path, char **out, size_t *out_len, int *out_errno, const char **errstr) {
@@ -632,138 +601,6 @@ static int read_text_file(const char *path, size_t max_len, char **out, const ch
     return 0;
 }
 
-static int read_allowlist_file(const char *path, size_t max_len, char **out, const char **errstr) {
-    int fd;
-    struct stat st;
-    ssize_t nread;
-    char *buf;
-    char *trimmed;
-
-    fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) {
-        if (errstr) {
-            *errstr = "unable to open command allowlist file";
-        }
-        return -1;
-    }
-
-    if (fstat(fd, &st) != 0) {
-        close(fd);
-        if (errstr) {
-            *errstr = "unable to stat command allowlist file";
-        }
-        return -1;
-    }
-
-    if (!S_ISREG(st.st_mode)) {
-        close(fd);
-        if (errstr) {
-            *errstr = "command allowlist file is not regular";
-        }
-        return -1;
-    }
-
-    if ((st.st_mode & 022) != 0) {
-        close(fd);
-        if (errstr) {
-            *errstr = "command allowlist file is writable by group or others";
-        }
-        return -1;
-    }
-
-    if (st.st_size <= 0 || st.st_size > (off_t)max_len) {
-        close(fd);
-        if (errstr) {
-            *errstr = "command allowlist file size invalid";
-        }
-        return -1;
-    }
-
-    buf = xmalloc((size_t)st.st_size + 1);
-    nread = read(fd, buf, (size_t)st.st_size);
-    close(fd);
-
-    if (nread <= 0) {
-        free(buf);
-        if (errstr) {
-            *errstr = "unable to read command allowlist file";
-        }
-        return -1;
-    }
-
-    buf[nread] = '\0';
-    trimmed = trim_whitespace(buf);
-    if (trimmed[0] == '\0') {
-        free(buf);
-        if (errstr) {
-            *errstr = "command allowlist file empty";
-        }
-        return -1;
-    }
-
-    *out = xstrdup(trimmed);
-    free(buf);
-    return 0;
-}
-
-static int add_allowlist_entries(struct policy_config *cfg, char *list, int allow_expand, const char **errstr) {
-    char *cursor = list;
-
-    while (cursor && *cursor) {
-        while (*cursor && (isspace((unsigned char)*cursor) || *cursor == ',')) {
-            cursor++;
-        }
-        if (!*cursor) {
-            break;
-        }
-
-        char *start = cursor;
-        while (*cursor && *cursor != ',' && *cursor != '\n' && *cursor != '\r') {
-            cursor++;
-        }
-        if (*cursor) {
-            *cursor = '\0';
-            cursor++;
-        }
-
-        char *entry = trim_whitespace(start);
-        if (*entry) {
-            char quote_char = '\0';
-            size_t entry_len = strlen(entry);
-            if (entry_len >= 2 && ((entry[0] == '"' && entry[entry_len - 1] == '"') ||
-                                   (entry[0] == '\'' && entry[entry_len - 1] == '\''))) {
-                quote_char = entry[0];
-                entry[entry_len - 1] = '\0';
-                entry = entry + 1;
-                entry = trim_whitespace(entry);
-            }
-
-            char *expanded = NULL;
-            const char *entry_use = entry;
-            if (allow_expand && quote_char != '\'') {
-                expanded = expand_vars(entry);
-                if (expanded) {
-                    entry_use = expanded;
-                }
-            }
-
-            char **next = realloc(cfg->command_allowlist, sizeof(char *) * (cfg->command_allowlist_len + 1));
-            if (!next) {
-                free(expanded);
-                if (errstr) {
-                    *errstr = "out of memory";
-                }
-                return -1;
-            }
-            cfg->command_allowlist = next;
-            cfg->command_allowlist[cfg->command_allowlist_len++] = xstrdup(entry_use);
-            free(expanded);
-        }
-    }
-
-    return 0;
-}
-
 static int should_enforce_for_user(void) {
     if (!g_cfg) {
         return 0;
@@ -782,11 +619,11 @@ static int should_enforce_for_user(void) {
 
 static const char *get_command_path(char * const run_argv[], char * const command_info[]) {
     if (command_info) {
-        const char *cmd = get_kv(command_info, "command");
+        const char *cmd = get_kv(command_info, "command_path");
         if (cmd && *cmd) {
             return cmd;
         }
-        cmd = get_kv(command_info, "command_path");
+        cmd = get_kv(command_info, "command");
         if (cmd && *cmd) {
             return cmd;
         }
@@ -799,23 +636,66 @@ static const char *get_command_path(char * const run_argv[], char * const comman
     return NULL;
 }
 
-static int command_requires_jwt(char * const run_argv[], char * const command_info[]) {
-    if (!g_cfg || g_cfg->command_allowlist_len == 0) {
-        return 1;
+static char *resolve_path_from_env(const char *cmd) {
+    const char *path = getenv("PATH");
+    if ((!path || !*path) && g_run_envp) {
+        for (size_t i = 0; g_run_envp[i]; i++) {
+            if (strncmp(g_run_envp[i], "PATH=", 5) == 0 && g_run_envp[i][5] != '\0') {
+                path = g_run_envp[i] + 5;
+                break;
+            }
+        }
     }
+    if (!cmd || !*cmd || !path) {
+        return NULL;
+    }
+    const char *cur = path;
+    while (*cur) {
+        const char *end = strchr(cur, ':');
+        size_t len = end ? (size_t)(end - cur) : strlen(cur);
+        if (len > 0) {
+            char candidate[PATH_MAX];
+            if (snprintf(candidate, sizeof(candidate), "%.*s/%s", (int)len, cur, cmd) < (int)sizeof(candidate)) {
+                if (access(candidate, X_OK) == 0) {
+                    return xstrdup(candidate);
+                }
+            }
+        }
+        if (!end) {
+            break;
+        }
+        cur = end + 1;
+    }
+    return NULL;
+}
 
+static char *resolve_command_for_match(char * const run_argv[], char * const command_info[]) {
     const char *cmd = get_command_path(run_argv, command_info);
-    if (!cmd) {
-        return 1;
+    char *resolved_cmd = NULL;
+    char *canon_cmd = NULL;
+
+    if (!cmd || !*cmd) {
+        return NULL;
     }
 
-    for (size_t i = 0; i < g_cfg->command_allowlist_len; i++) {
-        if (strcmp(cmd, g_cfg->command_allowlist[i]) == 0) {
-            return 1;
+    if (!strchr(cmd, '/')) {
+        resolved_cmd = resolve_path_from_env(cmd);
+        if (resolved_cmd) {
+            cmd = resolved_cmd;
         }
     }
 
-    return 0;
+    canon_cmd = realpath(cmd, NULL);
+    if (!canon_cmd || !*canon_cmd) {
+        free(canon_cmd);
+        if (resolved_cmd) {
+            return resolved_cmd;
+        }
+        return xstrdup(cmd);
+    }
+
+    free(resolved_cmd);
+    return canon_cmd;
 }
 
 static int base64url_decode(const char *in, unsigned char **out, size_t *out_len, const char **errstr) {
@@ -902,6 +782,53 @@ static int token_copy_string(const char *json, const jsmntok_t *tok, char *buf, 
     return 0;
 }
 
+static int token_to_bool(const char *json, const jsmntok_t *tok, int *out) {
+    char buf[16];
+    size_t len;
+
+    if (!json || !tok || !out) {
+        return -1;
+    }
+    len = (size_t)(tok->end - tok->start);
+    if (len == 0 || len >= sizeof(buf)) {
+        return -1;
+    }
+    memcpy(buf, json + tok->start, len);
+    buf[len] = '\0';
+    return parse_bool(buf, out);
+}
+
+static const char *token_type_name(int type) {
+    switch (type) {
+        case JSMN_OBJECT:
+            return "object";
+        case JSMN_ARRAY:
+            return "array";
+        case JSMN_STRING:
+            return "string";
+        case JSMN_PRIMITIVE:
+            return "primitive";
+        default:
+            return "unknown";
+    }
+}
+
+static void token_snippet(const char *json, const jsmntok_t *tok, char *buf, size_t buflen) {
+    if (!buf || buflen == 0) {
+        return;
+    }
+    buf[0] = '\0';
+    if (!json || !tok || tok->start < 0 || tok->end < tok->start) {
+        return;
+    }
+    size_t len = (size_t)(tok->end - tok->start);
+    if (len >= buflen) {
+        len = buflen - 1;
+    }
+    memcpy(buf, json + tok->start, len);
+    buf[len] = '\0';
+}
+
 static int skip_token(jsmntok_t *tokens, int index) {
     int i;
 
@@ -909,7 +836,6 @@ static int skip_token(jsmntok_t *tokens, int index) {
         int count = tokens[index].size;
         i = index + 1;
         for (int p = 0; p < count; p++) {
-            i = skip_token(tokens, i);
             i = skip_token(tokens, i);
         }
         return i;
@@ -1247,6 +1173,7 @@ static int check_claims(struct jwt_payload *payload, const char **errstr) {
     int iat_idx;
     int iss_idx;
     int aud_idx;
+    int sub_idx;
     int scope_idx;
     int host_idx;
     time_t now = time(NULL);
@@ -1270,6 +1197,20 @@ static int check_claims(struct jwt_payload *payload, const char **errstr) {
     if (aud_idx < 0 || !aud_matches(payload->json, payload->tokens, aud_idx, g_cfg->audience)) {
         if (errstr) {
             *errstr = "audience mismatch";
+        }
+        return 0;
+    }
+
+    if (!g_user || !*g_user) {
+        if (errstr) {
+            *errstr = "missing user";
+        }
+        return 0;
+    }
+    sub_idx = find_value_token(payload->json, payload->tokens, payload->tok_count, "sub");
+    if (sub_idx < 0 || !token_eq(payload->json, &payload->tokens[sub_idx], g_user)) {
+        if (errstr) {
+            *errstr = (sub_idx < 0) ? "missing sub" : "sub mismatch";
         }
         return 0;
     }
@@ -1340,6 +1281,217 @@ static int check_claims(struct jwt_payload *payload, const char **errstr) {
     return 1;
 }
 
+static int parse_int64_str(const char *s, long long *out) {
+    char *endp;
+    if (!s || !*s || !out) {
+        return -1;
+    }
+    errno = 0;
+    long long val = strtoll(s, &endp, 10);
+    if (errno != 0 || endp == s) {
+        return -1;
+    }
+    *out = val;
+    return 0;
+}
+
+static int command_setenv_requested(char * const command_info[]) {
+    (void)command_info;
+    return g_setenv_requested;
+}
+
+static int command_allowed_by_jwt(struct jwt_payload *payload, char * const command_info[],
+                                  char * const run_argv[], int policy_mode, const char **errstr) {
+    char *cmd = resolve_command_for_match(run_argv, command_info);
+    if (!cmd || !*cmd) {
+        if (errstr) {
+            *errstr = "missing command";
+        }
+        free(cmd);
+        return 0;
+    }
+    if (debug_enabled()) {
+        debug_log("%s: resolved command=%s\n", SUDO_AWESOME_JWT_NAME, cmd);
+    }
+
+    if (debug_enabled()) {
+        const char *cmd_info = get_kv(command_info, "command");
+        const char *cmd_path = get_kv(command_info, "command_path");
+        const char *runas_user_dbg = get_kv(command_info, "runas_user");
+        const char *runas_uid_dbg = get_kv(command_info, "runas_uid");
+        const char *runas_gid_dbg = get_kv(command_info, "runas_gid");
+        const char *setenv_dbg = get_kv(command_info, "setenv");
+        const char *sudo_cmd = get_run_env("SUDO_COMMAND");
+        debug_log("%s: command_info command=%s command_path=%s runas_user=%s runas_uid=%s runas_gid=%s setenv=%s\n",
+                  SUDO_AWESOME_JWT_NAME,
+                  cmd_info ? cmd_info : "(null)",
+                  cmd_path ? cmd_path : "(null)",
+                  runas_user_dbg ? runas_user_dbg : "(null)",
+                  runas_uid_dbg ? runas_uid_dbg : "(null)",
+                  runas_gid_dbg ? runas_gid_dbg : "(null)",
+                  setenv_dbg ? setenv_dbg : "(null)");
+        if (sudo_cmd) {
+            debug_log("%s: SUDO_COMMAND=%s\n", SUDO_AWESOME_JWT_NAME, sudo_cmd);
+        }
+    }
+
+    const char *runas_user = get_kv(command_info, "runas_user");
+    const char *runas_uid_str = get_kv(command_info, "runas_uid");
+    const char *runas_gid_str = get_kv(command_info, "runas_gid");
+    long long runas_uid = 0;
+    long long runas_gid = 0;
+    int runas_uid_set = (parse_int64_str(runas_uid_str, &runas_uid) == 0);
+    int runas_gid_set = (parse_int64_str(runas_gid_str, &runas_gid) == 0);
+    int runas_user_set = (runas_user && *runas_user);
+
+    int cmds_idx = find_value_token(payload->json, payload->tokens, payload->tok_count, "cmds");
+    if (cmds_idx < 0) {
+        if (errstr) {
+            *errstr = "missing cmds";
+        }
+        if (debug_enabled()) {
+            debug_log("%s: cmds missing in JWT\n", SUDO_AWESOME_JWT_NAME);
+        }
+        free(cmd);
+        return 0;
+    }
+    if (payload->tokens[cmds_idx].type != JSMN_ARRAY) {
+        if (errstr) {
+            *errstr = "invalid cmds";
+        }
+        if (debug_enabled()) {
+            debug_log("%s: cmds is not array\n", SUDO_AWESOME_JWT_NAME);
+        }
+        free(cmd);
+        return 0;
+    }
+
+    int idx = cmds_idx + 1;
+    int count = payload->tokens[cmds_idx].size;
+    int actual_setenv = policy_mode ? 0 : command_setenv_requested(command_info);
+    if (debug_enabled()) {
+        debug_log("%s: cmds count=%d\n", SUDO_AWESOME_JWT_NAME, count);
+        debug_log("%s: actual_setenv=%d\n", SUDO_AWESOME_JWT_NAME, actual_setenv);
+    }
+    for (int i = 0; i < count; i++) {
+        if (debug_enabled()) {
+            debug_log("%s: evaluating entry %d/%d\n", SUDO_AWESOME_JWT_NAME, i + 1, count);
+        }
+        if (payload->tokens[idx].type != JSMN_OBJECT) {
+            if (debug_enabled()) {
+                char snippet[64];
+                token_snippet(payload->json, &payload->tokens[idx], snippet, sizeof(snippet));
+                debug_log("%s: entry %d token type=%s value=%s\n",
+                          SUDO_AWESOME_JWT_NAME,
+                          i + 1,
+                          token_type_name(payload->tokens[idx].type),
+                          snippet[0] ? snippet : "(empty)");
+            }
+            idx = skip_token(payload->tokens, idx);
+            continue;
+        }
+
+        int obj_fields = payload->tokens[idx].size;
+        if (debug_enabled()) {
+            debug_log("%s: entry %d object fields=%d\n", SUDO_AWESOME_JWT_NAME, i + 1, obj_fields);
+        }
+        int cur = idx + 1;
+        int have_path = 0;
+        int path_ok = 0;
+        int have_runas_user = 0;
+        int runas_user_ok = 0;
+        int have_runas_uid = 0;
+        int runas_uid_ok = 0;
+        int have_runas_gid = 0;
+        int runas_gid_ok = 0;
+        int have_setenv = 0;
+        int expected_setenv = 0;
+
+        for (int p = 0; p + 1 < obj_fields; p += 2) {
+            int key_idx = cur;
+            int val_idx = cur + 1;
+            if (payload->tokens[key_idx].type == JSMN_STRING) {
+                if (token_eq(payload->json, &payload->tokens[key_idx], "path")) {
+                    have_path = 1;
+                    if (payload->tokens[val_idx].type == JSMN_STRING &&
+                        token_eq(payload->json, &payload->tokens[val_idx], cmd)) {
+                        path_ok = 1;
+                    }
+                } else if (token_eq(payload->json, &payload->tokens[key_idx], "runas_user")) {
+                    have_runas_user = 1;
+                    if (runas_user && payload->tokens[val_idx].type == JSMN_STRING &&
+                        token_eq(payload->json, &payload->tokens[val_idx], runas_user)) {
+                        runas_user_ok = 1;
+                    }
+                } else if (token_eq(payload->json, &payload->tokens[key_idx], "runas_uid")) {
+                    have_runas_uid = 1;
+                    long long val = 0;
+                    if (runas_uid_set &&
+                        parse_int64(payload->json, &payload->tokens[val_idx], &val) == 0 &&
+                        val == runas_uid) {
+                        runas_uid_ok = 1;
+                    }
+                } else if (token_eq(payload->json, &payload->tokens[key_idx], "runas_gid")) {
+                    have_runas_gid = 1;
+                    long long val = 0;
+                    if (runas_gid_set &&
+                        parse_int64(payload->json, &payload->tokens[val_idx], &val) == 0 &&
+                        val == runas_gid) {
+                        runas_gid_ok = 1;
+                    }
+                } else if (token_eq(payload->json, &payload->tokens[key_idx], "setenv")) {
+                    have_setenv = 1;
+                    if (policy_mode) {
+                        if (errstr) {
+                            *errstr = "setenv not supported in policy";
+                        }
+                        free(cmd);
+                        return 0;
+                    }
+                    int val = 0;
+                    if (token_to_bool(payload->json, &payload->tokens[val_idx], &val) != 0) {
+                        if (errstr) {
+                            *errstr = "invalid setenv";
+                        }
+                        free(cmd);
+                        return 0;
+                    }
+                    expected_setenv = val ? 1 : 0;
+                }
+            }
+            cur = skip_token(payload->tokens, val_idx);
+        }
+
+        if (debug_enabled()) {
+            debug_log("%s: entry path_ok=%d runas_user_ok=%d runas_uid_ok=%d runas_gid_ok=%d have_setenv=%d expected_setenv=%d\n",
+                      SUDO_AWESOME_JWT_NAME,
+                      path_ok,
+                      runas_user_ok,
+                      runas_uid_ok,
+                      runas_gid_ok,
+                      have_setenv,
+                      expected_setenv);
+        }
+
+        if (have_path && path_ok &&
+            (!have_runas_user || runas_user_ok || !runas_user_set) &&
+            (!have_runas_uid || runas_uid_ok || !runas_uid_set) &&
+            (!have_runas_gid || runas_gid_ok || !runas_gid_set) &&
+            ((have_setenv ? expected_setenv : 0) == actual_setenv)) {
+            free(cmd);
+            return 1;
+        }
+
+        idx = skip_token(payload->tokens, idx);
+    }
+
+    if (errstr) {
+        *errstr = "command not permitted";
+    }
+    free(cmd);
+    return 0;
+}
+
 int jwt_common_open(unsigned int version, sudo_printf_t sudo_plugin_printf,
                     char * const user_info[], char * const plugin_options[],
                     const char **errstr) {
@@ -1359,6 +1511,7 @@ int jwt_common_open(unsigned int version, sudo_printf_t sudo_plugin_printf,
     }
 
     g_printf = sudo_plugin_printf;
+    g_setenv_requested = 0;
     g_debug_override = 0;
     jwt_common_parse_debug_options(plugin_options);
     if (plugin_options) {
@@ -1432,6 +1585,8 @@ void jwt_common_close(void) {
     free(g_user);
     g_user = NULL;
     g_uid_valid = 0;
+    g_run_envp = NULL;
+    g_setenv_requested = 0;
     g_printf = NULL;
 }
 
@@ -1452,10 +1607,6 @@ int jwt_common_check(char * const command_info[], char * const run_argv[],
     }
 
     if (!should_enforce_for_user()) {
-        return 1;
-    }
-
-    if (!command_requires_jwt(run_argv, command_info)) {
         return 1;
     }
 
@@ -1487,6 +1638,11 @@ int jwt_common_check(char * const command_info[], char * const run_argv[],
         goto cleanup;
     }
 
+    int policy_mode = (log_prefix && strcmp(log_prefix, SUDO_AWESOME_JWT_POLICY) == 0);
+    if (!command_allowed_by_jwt(payload, command_info, run_argv, policy_mode, err_out)) {
+        goto cleanup;
+    }
+
     ok = 1;
 
 cleanup:
@@ -1503,6 +1659,9 @@ cleanup:
             }
         } else if (debug_enabled()) {
             debug_log("%s: check failed without error detail\n", SUDO_AWESOME_JWT_NAME);
+        }
+        if (debug_enabled() && payload && payload->json) {
+            debug_log("%s: jwt payload=%s\n", SUDO_AWESOME_JWT_NAME, payload->json);
         }
     }
     free_payload(payload);
