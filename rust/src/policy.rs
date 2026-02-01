@@ -120,7 +120,12 @@ extern "C" fn sudo_jwt_policy_check(
             debug_log_policy_state(state, "policy_check: policy not initialized");
             return -1;
         };
-        let rc = match jwt_check_internal(state, cfg, ptr::null(), argv, cfg.require_tty) {
+        let cmd_info_ptr = state
+            .command_info_ptrs
+            .as_ref()
+            .map(|ptrs| ptrs.as_ptr() as *const *const c_char)
+            .unwrap_or(ptr::null());
+        let rc = match jwt_check_internal(state, cfg, cmd_info_ptr, argv, cfg.require_tty, true) {
             Ok(()) => 1,
             Err(e) => {
                 set_err(state, errstr, &e);

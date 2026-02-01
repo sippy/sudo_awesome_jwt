@@ -96,8 +96,7 @@ Optional:
 - `require_jwt` (default: true)
 - `only_user` (if set, enforce JWT only for this user)
 - `only_uid` (if set, enforce JWT only for this uid)
-- `command_allowlist` (comma-separated list of absolute command paths that require JWT; if set, other commands bypass the plugin). If unquoted and begins with `/`, it is treated as a file path and the file contents are parsed as the list.
-- `${user}` and `${uid}` are expanded in config values and allowlist entries. Single-quote a value (or allowlist entry) to disable expansion, including when the allowlist is read from a file.
+- `${user}` and `${uid}` are expanded in config values. Single-quote a value to disable expansion.
 - `audience` may be a quoted string or an absolute path to a file containing the audience value
 
 ## JWT requirements
@@ -108,7 +107,45 @@ This plugin expects:
 - `aud` matches `audience` (string or array)
 - `exp` and `iat` present and valid
 - `scope` contains the required scope (string or array)
+- `sub` matches the invoking user
 - optional `host` matches if configured
+
+## JWT command policy
+
+The JWT must include a `cmds` array describing allowed commands for this token. Each entry is an object with:
+
+- `path` (absolute command path)
+- optional `runas_user`
+- optional `runas_uid`
+- optional `runas_gid`
+- optional `setenv` (approval plugin only; if present in a policy token the request is denied)
+
+If `cmds` is missing or the requested command does not match any entry, the request is denied.
+
+Example JWT payload (claims):
+
+```json
+{
+  "iss": "ci-signer",
+  "aud": "sudo-awesome-jwt",
+  "sub": "jenkins",
+  "iat": 1738360000,
+  "exp": 1738360300,
+  "scope": "sudo",
+  "cmds": [
+    {
+      "path": "/usr/local/bin/git",
+      "runas_user": "maintenance"
+    },
+    {
+      "path": "/home/maintenance/scripts/system_upgrade.sh",
+      "runas_user": "root",
+      "runas_uid": 0,
+      "runas_gid": 0
+    }
+  ]
+}
+```
 
 Algorithms supported: `RS256` and `EdDSA`.
 

@@ -22,7 +22,15 @@ DEBUG=${SUDO_AWESOME_JWT_DEBUG:-0}
 DEBUG_OPT=""
 RUNAS_USER=${SUDO_AWESOME_JWT_TEST_RUNAS_USER:-nobody}
 RUNAS_UID=""
+RUNAS_GID=""
 ID_CMD=$(command -v id || echo "/usr/bin/id")
+PRINTENV_CMD=$(command -v printenv || echo "/usr/bin/printenv")
+SETENV_TEST_VAR=${SUDO_AWESOME_JWT_TEST_ENVVAR:-SUDO_AWESOME_JWT_TEST_SENTINEL}
+SETENV_TEST_VALUE=${SUDO_AWESOME_JWT_TEST_ENVVAL:-"jwt-test-$RANDOM"}
+JWT_SUB=${SUDO_AWESOME_JWT_TEST_SUB:-$("$ID_CMD" -un 2>/dev/null || true)}
+if [[ -z "$JWT_SUB" ]]; then
+    JWT_SUB="root"
+fi
 
 if [[ -n "${SUDO_AWESOME_JWT_TEST_COMMANDS:-}" ]]; then
     IFS=',' read -r -a TEST_COMMANDS <<< "${SUDO_AWESOME_JWT_TEST_COMMANDS}"
@@ -51,10 +59,108 @@ fi
 if [[ -n "$RUNAS_USER" ]]; then
     if "$ID_CMD" -u "$RUNAS_USER" >/dev/null 2>&1; then
         RUNAS_UID=$("$ID_CMD" -u "$RUNAS_USER" 2>/dev/null || true)
+        RUNAS_GID=$("$ID_CMD" -g "$RUNAS_USER" 2>/dev/null || true)
     else
         RUNAS_USER=""
     fi
 fi
+
+ALLOW_SETENV_USER=${SUDO_AWESOME_JWT_TEST_SETENV_USER:-$("$ID_CMD" -un 2>/dev/null || true)}
+ALLOW_SETENV_UID=""
+ALLOW_SETENV_GID=""
+if [[ -n "$ALLOW_SETENV_USER" ]]; then
+    if "$ID_CMD" -u "$ALLOW_SETENV_USER" >/dev/null 2>&1; then
+        ALLOW_SETENV_UID=$("$ID_CMD" -u "$ALLOW_SETENV_USER" 2>/dev/null || true)
+        ALLOW_SETENV_GID=$("$ID_CMD" -g "$ALLOW_SETENV_USER" 2>/dev/null || true)
+    else
+        ALLOW_SETENV_USER=""
+    fi
+fi
+
+ROOT_UID=0
+ROOT_GID=0
+if "$ID_CMD" -u root >/dev/null 2>&1; then
+    ROOT_UID=$("$ID_CMD" -u root 2>/dev/null || echo 0)
+    ROOT_GID=$("$ID_CMD" -g root 2>/dev/null || echo 0)
+fi
+
+JWT_CMDS=""
+JWT_RUNAS_USERS=""
+JWT_SETENV_RUNAS=""
+
+resolve_realpath() {
+    local path="$1"
+    if command -v readlink >/dev/null 2>&1; then
+        readlink -f "$path" 2>/dev/null || true
+    elif command -v realpath >/dev/null 2>&1; then
+        realpath "$path" 2>/dev/null || true
+    else
+        echo ""
+    fi
+}
+
+resolve_cmd_for_jwt() {
+    local cmd="$1"
+    local resolved=""
+
+    if [[ -z "$cmd" ]]; then
+        return 1
+    fi
+
+    if [[ "$cmd" == /* ]]; then
+        resolved="$cmd"
+    else
+        resolved=$(command -v -- "$cmd" 2>/dev/null || true)
+    fi
+
+    if [[ -z "$resolved" ]]; then
+        return 1
+    fi
+
+    local canon
+    canon=$(resolve_realpath "$resolved")
+    if [[ -n "$canon" ]]; then
+        resolved="$canon"
+    fi
+
+    if [[ "$resolved" != /* ]]; then
+        return 1
+    fi
+
+    printf '%s' "$resolved"
+}
+
+prepare_jwt_env() {
+    local cmd="$1"
+    local runas_user="$2"
+    local runas_uid="$3"
+    local runas_gid="$4"
+    local setenv="$5"
+    local include_ids="$6"
+    local fake_count="$7"
+
+    local resolved
+    resolved=$(resolve_cmd_for_jwt "$cmd") || {
+        echo "unable to resolve command for JWT: $cmd" >&2
+        return 1
+    }
+
+    JWT_CMDS="$resolved"$'\n'
+    JWT_RUNAS_USERS=""
+    JWT_SETENV_RUNAS=""
+    JWT_INCLUDE_RUNAS_IDS="${include_ids:-1}"
+    JWT_FAKE_COUNT="${fake_count:-0}"
+    JWT_FAKE_USER="${runas_user:-root}"
+    JWT_FAKE_UID="${runas_uid:-0}"
+    JWT_FAKE_GID="${runas_gid:-0}"
+
+    if [[ -n "$runas_user" ]]; then
+        JWT_RUNAS_USERS+="$runas_user:$runas_uid:$runas_gid"$'\n'
+    fi
+    if [[ "$setenv" == "1" && -n "$runas_user" ]]; then
+        JWT_SETENV_RUNAS+="$runas_user:$runas_uid:$runas_gid"$'\n'
+    fi
+}
 
 log() {
     echo "[test] $*"
@@ -293,7 +399,7 @@ sed -i "s|KEY_PUB_PLACEHOLDER|$KEY_PUB|" "$CONFIG_FILE"
 make_jwt() {
     local ttl="$1"
     log_err "generating JWT (ttl=${ttl}s)"
-    KEY_PRIV="$KEY_PRIV" TTL_SECS="$ttl" python3 - <<'PY'
+    KEY_PRIV="$KEY_PRIV" TTL_SECS="$ttl" JWT_SUB="$JWT_SUB" JWT_CMDS="$JWT_CMDS" JWT_RUNAS_USERS="$JWT_RUNAS_USERS" JWT_SETENV_RUNAS="$JWT_SETENV_RUNAS" JWT_INCLUDE_RUNAS_IDS="$JWT_INCLUDE_RUNAS_IDS" JWT_FAKE_COUNT="$JWT_FAKE_COUNT" JWT_FAKE_USER="$JWT_FAKE_USER" JWT_FAKE_UID="$JWT_FAKE_UID" JWT_FAKE_GID="$JWT_FAKE_GID" python3 - <<'PY'
 import base64
 import json
 import os
@@ -302,14 +408,96 @@ import time
 
 key = os.environ["KEY_PRIV"]
 ttl = int(os.environ["TTL_SECS"])
+sub = os.environ.get("JWT_SUB", "")
+cmds_raw = os.environ.get("JWT_CMDS", "")
+runas_raw = os.environ.get("JWT_RUNAS_USERS", "")
+setenv_raw = os.environ.get("JWT_SETENV_RUNAS", "")
+include_ids_raw = os.environ.get("JWT_INCLUDE_RUNAS_IDS", "1").strip().lower()
+include_ids = include_ids_raw not in ("0", "false", "no")
+fake_count = int(os.environ.get("JWT_FAKE_COUNT", "0") or 0)
+fake_user = os.environ.get("JWT_FAKE_USER", "")
+fake_uid = os.environ.get("JWT_FAKE_UID", "")
+fake_gid = os.environ.get("JWT_FAKE_GID", "")
 now = int(time.time())
 header = {"alg": "RS256", "typ": "JWT"}
+cmds = [line for line in cmds_raw.splitlines() if line]
+runas_entries = []
+for line in runas_raw.splitlines():
+    if not line:
+        continue
+    parts = line.split(":", 2)
+    user = parts[0]
+    uid = parts[1] if len(parts) > 1 else ""
+    gid = parts[2] if len(parts) > 2 else ""
+    runas_entries.append((user, uid, gid))
+if not runas_entries:
+    runas_entries = [("", "", "")]
+setenv_entries = []
+for line in setenv_raw.splitlines():
+    if not line:
+        continue
+    parts = line.split(":", 2)
+    user = parts[0]
+    uid = parts[1] if len(parts) > 1 else ""
+    gid = parts[2] if len(parts) > 2 else ""
+    setenv_entries.append((user, uid, gid))
+
+cmds_payload = []
+for i in range(fake_count):
+    entry = {"path": f"/tmp/sudo-awesome-jwt-fake-{i}"}
+    if fake_user:
+        entry["runas_user"] = fake_user
+    if include_ids and fake_uid:
+        try:
+            entry["runas_uid"] = int(fake_uid)
+        except ValueError:
+            pass
+    if include_ids and fake_gid:
+        try:
+            entry["runas_gid"] = int(fake_gid)
+        except ValueError:
+            pass
+    cmds_payload.append(entry)
+for cmd in cmds:
+    for user, uid, gid in runas_entries:
+        entry = {"path": cmd}
+        if user:
+            entry["runas_user"] = user
+        if include_ids and uid:
+            try:
+                entry["runas_uid"] = int(uid)
+            except ValueError:
+                pass
+        if include_ids and gid:
+            try:
+                entry["runas_gid"] = int(gid)
+            except ValueError:
+                pass
+        cmds_payload.append(entry)
+    for user, uid, gid in setenv_entries:
+        entry = {"path": cmd, "setenv": True}
+        if user:
+            entry["runas_user"] = user
+        if include_ids and uid:
+            try:
+                entry["runas_uid"] = int(uid)
+            except ValueError:
+                pass
+        if include_ids and gid:
+            try:
+                entry["runas_gid"] = int(gid)
+            except ValueError:
+                pass
+        cmds_payload.append(entry)
+
 payload = {
     "iss": "test-issuer",
     "aud": "test-audience",
     "scope": "sudo",
     "iat": now,
     "exp": now + ttl,
+    "sub": sub,
+    "cmds": cmds_payload,
 }
 
 def b64url(data: bytes) -> bytes:
@@ -390,40 +578,140 @@ run_once() {
         exit 1
     fi
 
-    write_token "$TTL_SECS"
+    local -a token_files=()
+    local token_idx=0
     for cmd in "${TEST_COMMANDS[@]}"; do
-        log "running sudo command with fresh token ($cmd)"
-        if ! output=$(run_sudo "$cmd" 2>&1); then
-            echo "$output" >&2
-            dump_debug
-            echo "expected sudo to succeed for $plugin_type with fresh token ($cmd)" >&2
-            exit 1
-        fi
+        local variants=(
+            "with-ids:1:0"
+            "user-only:0:0"
+            "with-fakes:1:3"
+        )
+        for variant in "${variants[@]}"; do
+            IFS=':' read -r variant_label include_ids fake_count <<< "$variant"
+            if ! prepare_jwt_env "$cmd" "root" "$ROOT_UID" "$ROOT_GID" 0 "$include_ids" "$fake_count"; then
+                dump_debug
+                echo "failed to prepare JWT for $plugin_type ($cmd) [$variant_label]" >&2
+                exit 1
+            fi
+            write_token "$TTL_SECS"
+            if [[ "$variant_label" == "with-ids" ]]; then
+                local token_copy="$WORKDIR/token.${plugin_type}.${token_idx}"
+                cp "$TOKEN_FILE" "$token_copy"
+                token_files+=("$token_copy")
+                token_idx=$((token_idx + 1))
+            fi
+            log "running sudo command with fresh token ($cmd) [$variant_label]"
+            if ! output=$(run_sudo "$cmd" 2>&1); then
+                echo "$output" >&2
+                dump_debug
+                echo "expected sudo to succeed for $plugin_type with fresh token ($cmd) [$variant_label]" >&2
+                exit 1
+            fi
+        done
     done
 
     if [[ -n "$RUNAS_USER" && -n "$RUNAS_UID" ]]; then
-        log "running sudo command with runas user ($RUNAS_USER) ($plugin_type)"
-        runas_err="$WORKDIR/runas.stderr"
-        if ! output=$(run_sudo -u "$RUNAS_USER" "$ID_CMD" -u 2>"$runas_err"); then
-            cat "$runas_err" >&2 || true
-            dump_debug
-            echo "expected sudo -u $RUNAS_USER to succeed for $plugin_type" >&2
-            exit 1
-        fi
-        output_trimmed=$(echo "$output" | tr -d '[:space:]')
-        if [[ "$output_trimmed" != "$RUNAS_UID" ]]; then
-            cat "$runas_err" >&2 || true
-            echo "$output" >&2
-            dump_debug
-            echo "expected sudo -u $RUNAS_USER to run as uid $RUNAS_UID for $plugin_type" >&2
-            exit 1
+        local runas_variants=(
+            "with-ids:1:0"
+            "user-only:0:0"
+            "with-fakes:1:3"
+        )
+        for variant in "${runas_variants[@]}"; do
+            IFS=':' read -r variant_label include_ids fake_count <<< "$variant"
+            if ! prepare_jwt_env "$ID_CMD" "$RUNAS_USER" "$RUNAS_UID" "$RUNAS_GID" 0 "$include_ids" "$fake_count"; then
+                dump_debug
+                echo "failed to prepare JWT for runas user ($RUNAS_USER) ($plugin_type) [$variant_label]" >&2
+                exit 1
+            fi
+            write_token "$TTL_SECS"
+            log "running sudo command with runas user ($RUNAS_USER) ($plugin_type) [$variant_label]"
+            runas_err="$WORKDIR/runas.stderr"
+            if ! output=$(run_sudo -u "$RUNAS_USER" "$ID_CMD" -u 2>"$runas_err"); then
+                cat "$runas_err" >&2 || true
+                dump_debug
+                echo "expected sudo -u $RUNAS_USER to succeed for $plugin_type [$variant_label]" >&2
+                exit 1
+            fi
+            output_trimmed=$(echo "$output" | tr -d '[:space:]')
+            if [[ "$output_trimmed" != "$RUNAS_UID" ]]; then
+                cat "$runas_err" >&2 || true
+                echo "$output" >&2
+                dump_debug
+                echo "expected sudo -u $RUNAS_USER to run as uid $RUNAS_UID for $plugin_type [$variant_label]" >&2
+                exit 1
+            fi
+        done
+    fi
+
+    if [[ "$plugin_type" == "approval" && -n "$ALLOW_SETENV_USER" && -n "$ALLOW_SETENV_UID" ]]; then
+        local setenv_variants=(
+            "with-ids:1:0"
+            "user-only:0:0"
+            "with-fakes:1:3"
+        )
+        for variant in "${setenv_variants[@]}"; do
+            IFS=':' read -r variant_label include_ids fake_count <<< "$variant"
+            if ! prepare_jwt_env "$ID_CMD" "$ALLOW_SETENV_USER" "$ALLOW_SETENV_UID" "$ALLOW_SETENV_GID" 1 "$include_ids" "$fake_count"; then
+                dump_debug
+                echo "failed to prepare JWT for setenv user ($ALLOW_SETENV_USER) [$variant_label]" >&2
+                exit 1
+            fi
+            write_token "$TTL_SECS"
+            log "running sudo command with SETENV ($ALLOW_SETENV_USER) ($plugin_type) [$variant_label]"
+            setenv_err="$WORKDIR/setenv.stderr"
+            if ! output=$(run_sudo -E -u "$ALLOW_SETENV_USER" "$ID_CMD" -u 2>"$setenv_err"); then
+                cat "$setenv_err" >&2 || true
+                dump_debug
+                echo "expected sudo -E -u $ALLOW_SETENV_USER to succeed for $plugin_type [$variant_label]" >&2
+                exit 1
+            fi
+            output_trimmed=$(echo "$output" | tr -d '[:space:]')
+            if [[ "$output_trimmed" != "$ALLOW_SETENV_UID" ]]; then
+                cat "$setenv_err" >&2 || true
+                echo "$output" >&2
+                dump_debug
+                echo "expected sudo -E -u $ALLOW_SETENV_USER to run as uid $ALLOW_SETENV_UID for $plugin_type [$variant_label]" >&2
+                exit 1
+            fi
+        done
+
+        if command -v "$PRINTENV_CMD" >/dev/null 2>&1; then
+            export "$SETENV_TEST_VAR"="$SETENV_TEST_VALUE"
+            for variant in "${setenv_variants[@]}"; do
+                IFS=':' read -r variant_label include_ids fake_count <<< "$variant"
+                if ! prepare_jwt_env "$PRINTENV_CMD" "$ALLOW_SETENV_USER" "$ALLOW_SETENV_UID" "$ALLOW_SETENV_GID" 1 "$include_ids" "$fake_count"; then
+                    dump_debug
+                    echo "failed to prepare JWT for setenv printenv ($ALLOW_SETENV_USER) [$variant_label]" >&2
+                    exit 1
+                fi
+                write_token "$TTL_SECS"
+                log "running sudo printenv with SETENV ($ALLOW_SETENV_USER) ($plugin_type) [$variant_label]"
+                setenv_err="$WORKDIR/setenv.stderr"
+                if ! output=$(run_sudo -E -u "$ALLOW_SETENV_USER" "$PRINTENV_CMD" "$SETENV_TEST_VAR" 2>"$setenv_err"); then
+                    cat "$setenv_err" >&2 || true
+                    dump_debug
+                    echo "expected sudo -E -u $ALLOW_SETENV_USER printenv to succeed for $plugin_type [$variant_label]" >&2
+                    exit 1
+                fi
+                output_trimmed=$(echo "$output" | tr -d '[:space:]')
+                if [[ "$output_trimmed" != "$SETENV_TEST_VALUE" ]]; then
+                    echo "$output" >&2
+                    dump_debug
+                    echo "expected sudo -E -u $ALLOW_SETENV_USER printenv to return $SETENV_TEST_VALUE for $plugin_type [$variant_label]" >&2
+                    exit 1
+                fi
+            done
         fi
     fi
 
     log "waiting $WAIT_SECS seconds for token expiry"
     sleep "$WAIT_SECS"
 
-    for cmd in "${TEST_COMMANDS[@]}"; do
+    for i in "${!TEST_COMMANDS[@]}"; do
+        cmd="${TEST_COMMANDS[$i]}"
+        if [[ -n "${token_files[$i]:-}" ]]; then
+            cp "${token_files[$i]}" "$TOKEN_FILE"
+        fi
         log "running sudo command after expiry ($cmd)"
         if output=$(run_sudo "$cmd" 2>&1); then
             echo "$output" >&2
