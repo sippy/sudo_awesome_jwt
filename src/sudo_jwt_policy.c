@@ -17,6 +17,7 @@ static char **g_user_env_alloc;
 static char **g_argv_out_alloc;
 static char *g_env_empty[1];
 static char *g_runas_user;
+static char *g_runas_group;
 static uid_t g_runas_uid;
 static gid_t g_runas_gid;
 static int g_runas_uid_set;
@@ -70,6 +71,8 @@ static void free_argv_out(char **argv) {
 static void reset_runas(void) {
     free(g_runas_user);
     g_runas_user = NULL;
+    free(g_runas_group);
+    g_runas_group = NULL;
     g_runas_uid_set = 0;
     g_runas_gid_set = 0;
 }
@@ -85,6 +88,11 @@ static void parse_runas_settings(char * const settings[]) {
             const char *val = opt + 11;
             if (*val) {
                 g_runas_user = strdup(val);
+            }
+        } else if (strncmp(opt, "runas_group=", 12) == 0) {
+            const char *val = opt + 12;
+            if (*val) {
+                g_runas_group = strdup(val);
             }
         } else if (strncmp(opt, "runas_uid=", 10) == 0) {
             const char *val = opt + 10;
@@ -195,12 +203,17 @@ static char **build_command_info(char * const argv[], const char *cmd, const cha
         cwd = "/";
     }
 
-    char **info = calloc(7, sizeof(char *));
+    size_t total = 6;
+    if (g_runas_group) {
+        total++;
+    }
+    char **info = calloc(total + 1, sizeof(char *));
     if (!info) {
         return NULL;
     }
-    info[0] = dup_kv("command", cmd);
-    info[1] = dup_kv("command_path", cmd_path ? cmd_path : cmd);
+    size_t idx = 0;
+    info[idx++] = dup_kv("command", cmd);
+    info[idx++] = dup_kv("command_path", cmd_path ? cmd_path : cmd);
     const char *runas_user = g_runas_user ? g_runas_user : SUDO_AWESOME_JWT_RUNAS_USER_DEFAULT;
     char uid_buf[32];
     char gid_buf[32];
@@ -208,13 +221,16 @@ static char **build_command_info(char * const argv[], const char *cmd, const cha
              (unsigned)(g_runas_uid_set ? g_runas_uid : SUDO_AWESOME_JWT_RUNAS_UID_DEFAULT));
     snprintf(gid_buf, sizeof(gid_buf), "%u",
              (unsigned)(g_runas_gid_set ? g_runas_gid : SUDO_AWESOME_JWT_RUNAS_GID_DEFAULT));
-    info[2] = dup_kv("runas_user", runas_user);
-    info[3] = dup_kv("runas_uid", uid_buf);
-    info[4] = dup_kv("runas_gid", gid_buf);
-    info[5] = dup_kv("cwd", cwd);
-    info[6] = NULL;
+    info[idx++] = dup_kv("runas_user", runas_user);
+    info[idx++] = dup_kv("runas_uid", uid_buf);
+    info[idx++] = dup_kv("runas_gid", gid_buf);
+    if (g_runas_group) {
+        info[idx++] = dup_kv("runas_group", g_runas_group);
+    }
+    info[idx++] = dup_kv("cwd", cwd);
+    info[idx] = NULL;
 
-    for (size_t i = 0; i < 6; i++) {
+    for (size_t i = 0; i < idx; i++) {
         if (!info[i]) {
             free_command_info(info);
             return NULL;

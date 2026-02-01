@@ -264,6 +264,14 @@ static int parse_bool(const char *s, int *out) {
     return -1;
 }
 
+static int runas_group_matches_n(const char *runas_group, const char *token, size_t len) {
+    if (!runas_group || !token || len == 0) {
+        return 0;
+    }
+    size_t runas_len = strlen(runas_group);
+    return runas_len == len && strncmp(runas_group, token, len) == 0;
+}
+
 static void free_config(struct policy_config *cfg) {
     if (!cfg) {
         return;
@@ -1320,6 +1328,7 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
         const char *runas_user_dbg = get_kv(command_info, "runas_user");
         const char *runas_uid_dbg = get_kv(command_info, "runas_uid");
         const char *runas_gid_dbg = get_kv(command_info, "runas_gid");
+        const char *runas_group_dbg = get_kv(command_info, "runas_group");
         const char *setenv_dbg = get_kv(command_info, "setenv");
         const char *sudo_cmd = get_run_env("SUDO_COMMAND");
         debug_log("%s: command_info command=%s command_path=%s runas_user=%s runas_uid=%s runas_gid=%s setenv=%s\n",
@@ -1330,6 +1339,9 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
                   runas_uid_dbg ? runas_uid_dbg : "(null)",
                   runas_gid_dbg ? runas_gid_dbg : "(null)",
                   setenv_dbg ? setenv_dbg : "(null)");
+        debug_log("%s: command_info runas_group=%s\n",
+                  SUDO_AWESOME_JWT_NAME,
+                  runas_group_dbg ? runas_group_dbg : "(null)");
         if (sudo_cmd) {
             debug_log("%s: SUDO_COMMAND=%s\n", SUDO_AWESOME_JWT_NAME, sudo_cmd);
         }
@@ -1338,6 +1350,7 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
     const char *runas_user = get_kv(command_info, "runas_user");
     const char *runas_uid_str = get_kv(command_info, "runas_uid");
     const char *runas_gid_str = get_kv(command_info, "runas_gid");
+    const char *runas_group = get_kv(command_info, "runas_group");
     long long runas_uid = 0;
     long long runas_gid = 0;
     int runas_uid_set = (parse_int64_str(runas_uid_str, &runas_uid) == 0);
@@ -1369,6 +1382,7 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
     int idx = cmds_idx + 1;
     int count = payload->tokens[cmds_idx].size;
     int actual_setenv = policy_mode ? 0 : command_setenv_requested(command_info);
+    int best_score = -1;
     if (debug_enabled()) {
         debug_log("%s: cmds count=%d\n", SUDO_AWESOME_JWT_NAME, count);
         debug_log("%s: actual_setenv=%d\n", SUDO_AWESOME_JWT_NAME, actual_setenv);
@@ -1404,9 +1418,12 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
         int runas_uid_ok = 0;
         int have_runas_gid = 0;
         int runas_gid_ok = 0;
+        int have_runas_group = 0;
+        int runas_group_ok = 0;
         int have_setenv = 0;
         int expected_setenv = 0;
 
+        int entry_score = 0;
         for (int p = 0; p + 1 < obj_fields; p += 2) {
             int key_idx = cur;
             int val_idx = cur + 1;
@@ -1439,6 +1456,15 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
                         val == runas_gid) {
                         runas_gid_ok = 1;
                     }
+                } else if (token_eq(payload->json, &payload->tokens[key_idx], "runas_group")) {
+                    have_runas_group = 1;
+                    if (payload->tokens[val_idx].type == JSMN_STRING) {
+                        size_t len = (size_t)(payload->tokens[val_idx].end - payload->tokens[val_idx].start);
+                        const char *start = payload->json + payload->tokens[val_idx].start;
+                        if (runas_group_matches_n(runas_group, start, len)) {
+                            runas_group_ok = 1;
+                        }
+                    }
                 } else if (token_eq(payload->json, &payload->tokens[key_idx], "setenv")) {
                     have_setenv = 1;
                     if (policy_mode) {
@@ -1463,12 +1489,13 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
         }
 
         if (debug_enabled()) {
-            debug_log("%s: entry path_ok=%d runas_user_ok=%d runas_uid_ok=%d runas_gid_ok=%d have_setenv=%d expected_setenv=%d\n",
+            debug_log("%s: entry path_ok=%d runas_user_ok=%d runas_uid_ok=%d runas_gid_ok=%d runas_group_ok=%d have_setenv=%d expected_setenv=%d\n",
                       SUDO_AWESOME_JWT_NAME,
                       path_ok,
                       runas_user_ok,
                       runas_uid_ok,
                       runas_gid_ok,
+                      runas_group_ok,
                       have_setenv,
                       expected_setenv);
         }
@@ -1477,12 +1504,34 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
             (!have_runas_user || runas_user_ok || !runas_user_set) &&
             (!have_runas_uid || runas_uid_ok || !runas_uid_set) &&
             (!have_runas_gid || runas_gid_ok || !runas_gid_set) &&
+            (!have_runas_group || runas_group_ok) &&
             ((have_setenv ? expected_setenv : 0) == actual_setenv)) {
-            free(cmd);
-            return 1;
+            if (have_runas_user && runas_user_ok) {
+                entry_score++;
+            }
+            if (have_runas_uid && runas_uid_ok) {
+                entry_score++;
+            }
+            if (have_runas_gid && runas_gid_ok) {
+                entry_score++;
+            }
+            if (have_runas_group && runas_group_ok) {
+                entry_score++;
+            }
+            if (have_setenv) {
+                entry_score++;
+            }
+            if (entry_score > best_score) {
+                best_score = entry_score;
+            }
         }
 
         idx = skip_token(payload->tokens, idx);
+    }
+
+    if (best_score >= 0) {
+        free(cmd);
+        return 1;
     }
 
     if (errstr) {

@@ -72,6 +72,7 @@ pub(crate) struct State {
     pub(crate) runas_user: Option<String>,
     pub(crate) runas_uid: Option<u32>,
     pub(crate) runas_gid: Option<u32>,
+    pub(crate) runas_group: Option<String>,
     pub(crate) setenv_requested: bool,
     pub(crate) sudo_printf: SudoPrintfT,
 }
@@ -203,6 +204,7 @@ pub(crate) fn debug_log_approval(msg: &str) {
         state.runas_user = None;
         state.runas_uid = None;
         state.runas_gid = None;
+        state.runas_group = None;
         state.setenv_requested = false;
         debug_dump_plugin_options(state, plugin_options, prefix);
         let major = sudo_api_version_get_major(version);
@@ -263,6 +265,10 @@ pub(crate) fn debug_log_approval(msg: &str) {
                     if let Some(val) = s.strip_prefix("runas_user=") {
                         if !val.is_empty() {
                             state.runas_user = Some(val.to_string());
+                        }
+                    } else if let Some(val) = s.strip_prefix("runas_group=") {
+                        if !val.is_empty() {
+                            state.runas_group = Some(val.to_string());
                         }
                     } else if let Some(val) = s.strip_prefix("runas_uid=") {
                         if let Ok(parsed) = val.parse::<u32>() {
@@ -336,6 +342,7 @@ pub(crate) fn sudo_jwt_close_internal(close_label: &str, log_fn: fn(&State, &str
         state.runas_user = None;
         state.runas_uid = None;
         state.runas_gid = None;
+        state.runas_group = None;
         state.setenv_requested = false;
         state.sudo_printf = None;
     });
@@ -418,6 +425,7 @@ pub(crate) fn build_command_info_with_path(
     runas_user: Option<&str>,
     runas_uid: Option<u32>,
     runas_gid: Option<u32>,
+    runas_group: Option<&str>,
 ) -> (Vec<CString>, Vec<usize>) {
     let cwd = std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("/"))
@@ -432,6 +440,11 @@ pub(crate) fn build_command_info_with_path(
     entries.push(CString::new(format!("runas_user={runas_user}")).unwrap());
     entries.push(CString::new(format!("runas_uid={runas_uid}")).unwrap());
     entries.push(CString::new(format!("runas_gid={runas_gid}")).unwrap());
+    if let Some(group) = runas_group {
+        if !group.is_empty() {
+            entries.push(CString::new(format!("runas_group={group}")).unwrap());
+        }
+    }
     entries.push(CString::new(format!("cwd={cwd}")).unwrap());
     let mut ptrs: Vec<usize> = entries.iter().map(|c| c.as_ptr() as usize).collect();
     ptrs.push(0);
@@ -801,10 +814,11 @@ fn command_from_info(command_info: *const *const c_char, run_argv: *const *const
     None
 }
 
-fn runas_from_info(command_info: *const *const c_char) -> (Option<String>, Option<u32>, Option<u32>) {
+fn runas_from_info(command_info: *const *const c_char) -> (Option<String>, Option<u32>, Option<u32>, Option<String>) {
     let mut runas_user = None;
     let mut runas_uid = None;
     let mut runas_gid = None;
+    let mut runas_group = None;
     unsafe {
         if !command_info.is_null() {
             let mut idx = 0;
@@ -815,6 +829,10 @@ fn runas_from_info(command_info: *const *const c_char) -> (Option<String>, Optio
                 if let Some(val) = s.strip_prefix("runas_user=") {
                     if !val.is_empty() {
                         runas_user = Some(val.to_string());
+                    }
+                } else if let Some(val) = s.strip_prefix("runas_group=") {
+                    if !val.is_empty() {
+                        runas_group = Some(val.to_string());
                     }
                 } else if let Some(val) = s.strip_prefix("runas_uid=") {
                     if let Ok(parsed) = val.parse::<u32>() {
@@ -829,7 +847,7 @@ fn runas_from_info(command_info: *const *const c_char) -> (Option<String>, Optio
             }
         }
     }
-    (runas_user, runas_uid, runas_gid)
+    (runas_user, runas_uid, runas_gid, runas_group)
 }
 
 fn parse_setenv(value: &Value) -> Option<bool> {
@@ -861,7 +879,7 @@ fn command_allowed_by_jwt(state: &State, payload: &Value, command_info: *const *
     }
     let cmds = payload.get("cmds").ok_or_else(|| "missing cmds".to_string())?;
     let cmds = cmds.as_array().ok_or_else(|| "invalid cmds".to_string())?;
-    let (runas_user, runas_uid, runas_gid) = runas_from_info(command_info);
+    let (runas_user, runas_uid, runas_gid, runas_group) = runas_from_info(command_info);
     if policy_mode {
         if cmds.iter().any(|entry| entry.get("setenv").is_some()) {
             return Err("setenv not supported in policy".to_string());
@@ -869,17 +887,20 @@ fn command_allowed_by_jwt(state: &State, payload: &Value, command_info: *const *
     }
     let actual_setenv = if policy_mode { false } else { state.setenv_requested };
 
+    let mut best_score: i32 = -1;
     for entry in cmds {
         let Some(obj) = entry.as_object() else { continue; };
         let Some(path) = obj.get("path").and_then(|v| v.as_str()) else { continue; };
         if path != cmd {
             continue;
         }
+        let mut entry_score: i32 = 0;
         if let Some(req_user) = obj.get("runas_user").and_then(|v| v.as_str()) {
             if let Some(actual) = runas_user.as_deref() {
                 if actual != req_user {
                     continue;
                 }
+                entry_score += 1;
             }
         }
         if let Some(req_uid) = obj.get("runas_uid").and_then(|v| v.as_u64()) {
@@ -887,6 +908,7 @@ fn command_allowed_by_jwt(state: &State, payload: &Value, command_info: *const *
                 if actual_uid != req_uid as u32 {
                     continue;
                 }
+                entry_score += 1;
             }
         }
         if let Some(req_gid) = obj.get("runas_gid").and_then(|v| v.as_u64()) {
@@ -894,20 +916,38 @@ fn command_allowed_by_jwt(state: &State, payload: &Value, command_info: *const *
                 if actual_gid != req_gid as u32 {
                     continue;
                 }
+                entry_score += 1;
             }
+        }
+        if let Some(req_group) = obj.get("runas_group").and_then(|v| v.as_str()) {
+            if runas_group.as_deref() != Some(req_group) {
+                continue;
+            }
+            entry_score += 1;
         }
         let expected_setenv = if let Some(val) = obj.get("setenv") {
             parse_setenv(val).ok_or_else(|| "invalid setenv".to_string())?
         } else {
             false
         };
-        if expected_setenv != actual_setenv {
+        if obj.get("setenv").is_some() {
+            if expected_setenv != actual_setenv {
+                continue;
+            }
+            entry_score += 1;
+        } else if actual_setenv {
             continue;
         }
-        return Ok(());
+        if entry_score > best_score {
+            best_score = entry_score;
+        }
     }
 
-    Err("command not permitted".to_string())
+    if best_score >= 0 {
+        Ok(())
+    } else {
+        Err("command not permitted".to_string())
+    }
 }
 
 fn has_scope(scope_val: &Value, required: &str) -> bool {

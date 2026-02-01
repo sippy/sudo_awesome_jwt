@@ -118,7 +118,10 @@ The JWT must include a `cmds` array describing allowed commands for this token. 
 - optional `runas_user`
 - optional `runas_uid`
 - optional `runas_gid`
+- optional `runas_group`
 - optional `setenv` (approval plugin only; if present in a policy token the request is denied)
+
+If you need to allow multiple runas groups for the same command, add multiple entries (one per group).
 
 If `cmds` is missing or the requested command does not match any entry, the request is denied.
 
@@ -138,10 +141,16 @@ Example JWT payload (claims):
       "runas_user": "maintenance"
     },
     {
+      "path": "/home/maintenance/scripts/web_update.py",
+      "runas_user": "www-root",
+      "runas_group": "www"
+    },
+    {
       "path": "/home/maintenance/scripts/system_upgrade.sh",
       "runas_user": "root",
       "runas_uid": 0,
-      "runas_gid": 0
+      "runas_gid": 0,
+      "setenv": true
     }
   ]
 }

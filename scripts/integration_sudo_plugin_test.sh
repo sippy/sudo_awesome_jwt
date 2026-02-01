@@ -23,6 +23,12 @@ DEBUG_OPT=""
 RUNAS_USER=${SUDO_AWESOME_JWT_TEST_RUNAS_USER:-nobody}
 RUNAS_UID=""
 RUNAS_GID=""
+RUNAS_GROUP=${SUDO_AWESOME_JWT_TEST_RUNAS_GROUP:-root}
+RUNAS_GROUP_GID=""
+DENY_CMD=${SUDO_AWESOME_JWT_TEST_DENY_COMMAND:-true}
+MISMATCH_RUNAS_USER=${SUDO_AWESOME_JWT_TEST_MISMATCH_USER:-}
+MISMATCH_RUNAS_GROUP=${SUDO_AWESOME_JWT_TEST_MISMATCH_GROUP:-}
+MISMATCH_RUNAS_GROUP_GID=""
 ID_CMD=$(command -v id || echo "/usr/bin/id")
 PRINTENV_CMD=$(command -v printenv || echo "/usr/bin/printenv")
 SETENV_TEST_VAR=${SUDO_AWESOME_JWT_TEST_ENVVAR:-SUDO_AWESOME_JWT_TEST_SENTINEL}
@@ -62,6 +68,78 @@ if [[ -n "$RUNAS_USER" ]]; then
         RUNAS_GID=$("$ID_CMD" -g "$RUNAS_USER" 2>/dev/null || true)
     else
         RUNAS_USER=""
+    fi
+fi
+
+resolve_group_gid() {
+    local group="$1"
+    local gid=""
+    if [[ -z "$group" ]]; then
+        return 1
+    fi
+    if command -v getent >/dev/null 2>&1; then
+        gid=$(getent group "$group" 2>/dev/null | awk -F: '{print $3}')
+    fi
+    if [[ -z "$gid" && -f /etc/group ]]; then
+        gid=$(awk -F: -v name="$group" '$1 == name {print $3; exit}' /etc/group)
+    fi
+    if [[ -n "$gid" ]]; then
+        printf '%s' "$gid"
+        return 0
+    fi
+    return 1
+}
+
+if [[ -n "$RUNAS_GROUP" ]]; then
+    RUNAS_GROUP_GID=$(resolve_group_gid "$RUNAS_GROUP" || true)
+    if [[ -z "$RUNAS_GROUP_GID" ]]; then
+        RUNAS_GROUP=""
+    fi
+fi
+
+find_non_root_user() {
+    local user=""
+    if command -v getent >/dev/null 2>&1; then
+        user=$(getent passwd 2>/dev/null | awk -F: '$3 != 0 {print $1; exit}')
+    fi
+    if [[ -z "$user" && -f /etc/passwd ]]; then
+        user=$(awk -F: '$3 != 0 {print $1; exit}' /etc/passwd)
+    fi
+    if [[ -n "$user" ]]; then
+        printf '%s' "$user"
+        return 0
+    fi
+    return 1
+}
+
+if [[ -z "$MISMATCH_RUNAS_USER" ]]; then
+    MISMATCH_RUNAS_USER=$(find_non_root_user || true)
+fi
+
+if [[ -n "$MISMATCH_RUNAS_USER" ]]; then
+    if [[ "$MISMATCH_RUNAS_USER" == "root" ]] || ! "$ID_CMD" -u "$MISMATCH_RUNAS_USER" >/dev/null 2>&1; then
+        MISMATCH_RUNAS_USER=""
+    fi
+fi
+
+if [[ -z "$MISMATCH_RUNAS_GROUP" ]]; then
+    if [[ "$RUNAS_GROUP" == "root" ]]; then
+        for candidate in wheel nogroup nobody; do
+            if resolve_group_gid "$candidate" >/dev/null 2>&1; then
+                MISMATCH_RUNAS_GROUP="$candidate"
+                break
+            fi
+        done
+    else
+        MISMATCH_RUNAS_GROUP="root"
+    fi
+fi
+
+if [[ -n "$MISMATCH_RUNAS_GROUP" ]]; then
+    MISMATCH_RUNAS_GROUP_GID=$(resolve_group_gid "$MISMATCH_RUNAS_GROUP" || true)
+    if [[ -z "$MISMATCH_RUNAS_GROUP_GID" || "$MISMATCH_RUNAS_GROUP" == "$RUNAS_GROUP" ]]; then
+        MISMATCH_RUNAS_GROUP=""
+        MISMATCH_RUNAS_GROUP_GID=""
     fi
 fi
 
@@ -130,6 +208,14 @@ resolve_cmd_for_jwt() {
     printf '%s' "$resolved"
 }
 
+DENY_CMD_RESOLVED=""
+if [[ -n "$DENY_CMD" ]]; then
+    DENY_CMD_RESOLVED=$(resolve_cmd_for_jwt "$DENY_CMD" || true)
+    if [[ -z "$DENY_CMD_RESOLVED" ]]; then
+        DENY_CMD=""
+    fi
+fi
+
 prepare_jwt_env() {
     local cmd="$1"
     local runas_user="$2"
@@ -138,6 +224,8 @@ prepare_jwt_env() {
     local setenv="$5"
     local include_ids="$6"
     local fake_count="$7"
+    local include_runas_entries="${8:-1}"
+    local runas_group="${9:-}"
 
     local resolved
     resolved=$(resolve_cmd_for_jwt "$cmd") || {
@@ -149,12 +237,14 @@ prepare_jwt_env() {
     JWT_RUNAS_USERS=""
     JWT_SETENV_RUNAS=""
     JWT_INCLUDE_RUNAS_IDS="${include_ids:-1}"
+    JWT_INCLUDE_RUNAS_ENTRIES="${include_runas_entries:-1}"
     JWT_FAKE_COUNT="${fake_count:-0}"
     JWT_FAKE_USER="${runas_user:-root}"
     JWT_FAKE_UID="${runas_uid:-0}"
     JWT_FAKE_GID="${runas_gid:-0}"
+    JWT_RUNAS_GROUP="${runas_group}"
 
-    if [[ -n "$runas_user" ]]; then
+    if [[ -n "$runas_user" && "$JWT_INCLUDE_RUNAS_ENTRIES" != "0" ]]; then
         JWT_RUNAS_USERS+="$runas_user:$runas_uid:$runas_gid"$'\n'
     fi
     if [[ "$setenv" == "1" && -n "$runas_user" ]]; then
@@ -399,7 +489,7 @@ sed -i "s|KEY_PUB_PLACEHOLDER|$KEY_PUB|" "$CONFIG_FILE"
 make_jwt() {
     local ttl="$1"
     log_err "generating JWT (ttl=${ttl}s)"
-    KEY_PRIV="$KEY_PRIV" TTL_SECS="$ttl" JWT_SUB="$JWT_SUB" JWT_CMDS="$JWT_CMDS" JWT_RUNAS_USERS="$JWT_RUNAS_USERS" JWT_SETENV_RUNAS="$JWT_SETENV_RUNAS" JWT_INCLUDE_RUNAS_IDS="$JWT_INCLUDE_RUNAS_IDS" JWT_FAKE_COUNT="$JWT_FAKE_COUNT" JWT_FAKE_USER="$JWT_FAKE_USER" JWT_FAKE_UID="$JWT_FAKE_UID" JWT_FAKE_GID="$JWT_FAKE_GID" python3 - <<'PY'
+    KEY_PRIV="$KEY_PRIV" TTL_SECS="$ttl" JWT_SUB="$JWT_SUB" JWT_CMDS="$JWT_CMDS" JWT_RUNAS_USERS="$JWT_RUNAS_USERS" JWT_SETENV_RUNAS="$JWT_SETENV_RUNAS" JWT_INCLUDE_RUNAS_IDS="$JWT_INCLUDE_RUNAS_IDS" JWT_INCLUDE_RUNAS_ENTRIES="$JWT_INCLUDE_RUNAS_ENTRIES" JWT_FAKE_COUNT="$JWT_FAKE_COUNT" JWT_FAKE_USER="$JWT_FAKE_USER" JWT_FAKE_UID="$JWT_FAKE_UID" JWT_FAKE_GID="$JWT_FAKE_GID" JWT_RUNAS_GROUP="$JWT_RUNAS_GROUP" python3 - <<'PY'
 import base64
 import json
 import os
@@ -414,10 +504,13 @@ runas_raw = os.environ.get("JWT_RUNAS_USERS", "")
 setenv_raw = os.environ.get("JWT_SETENV_RUNAS", "")
 include_ids_raw = os.environ.get("JWT_INCLUDE_RUNAS_IDS", "1").strip().lower()
 include_ids = include_ids_raw not in ("0", "false", "no")
+include_runas_entries_raw = os.environ.get("JWT_INCLUDE_RUNAS_ENTRIES", "1").strip().lower()
+include_runas_entries = include_runas_entries_raw not in ("0", "false", "no")
 fake_count = int(os.environ.get("JWT_FAKE_COUNT", "0") or 0)
 fake_user = os.environ.get("JWT_FAKE_USER", "")
 fake_uid = os.environ.get("JWT_FAKE_UID", "")
 fake_gid = os.environ.get("JWT_FAKE_GID", "")
+runas_group = os.environ.get("JWT_RUNAS_GROUP", "").strip()
 now = int(time.time())
 header = {"alg": "RS256", "typ": "JWT"}
 cmds = [line for line in cmds_raw.splitlines() if line]
@@ -457,23 +550,28 @@ for i in range(fake_count):
             entry["runas_gid"] = int(fake_gid)
         except ValueError:
             pass
+    if runas_group:
+        entry["runas_group"] = runas_group
     cmds_payload.append(entry)
 for cmd in cmds:
-    for user, uid, gid in runas_entries:
-        entry = {"path": cmd}
-        if user:
-            entry["runas_user"] = user
-        if include_ids and uid:
-            try:
-                entry["runas_uid"] = int(uid)
-            except ValueError:
-                pass
-        if include_ids and gid:
-            try:
-                entry["runas_gid"] = int(gid)
-            except ValueError:
-                pass
-        cmds_payload.append(entry)
+    if include_runas_entries:
+        for user, uid, gid in runas_entries:
+            entry = {"path": cmd}
+            if user:
+                entry["runas_user"] = user
+            if include_ids and uid:
+                try:
+                    entry["runas_uid"] = int(uid)
+                except ValueError:
+                    pass
+            if include_ids and gid:
+                try:
+                    entry["runas_gid"] = int(gid)
+                except ValueError:
+                    pass
+            if runas_group:
+                entry["runas_group"] = runas_group
+            cmds_payload.append(entry)
     for user, uid, gid in setenv_entries:
         entry = {"path": cmd, "setenv": True}
         if user:
@@ -488,6 +586,8 @@ for cmd in cmds:
                 entry["runas_gid"] = int(gid)
             except ValueError:
                 pass
+        if runas_group:
+            entry["runas_group"] = runas_group
         cmds_payload.append(entry)
 
 payload = {
@@ -610,6 +710,24 @@ run_once() {
         done
     done
 
+    local deny_token="$WORKDIR/token.${plugin_type}.deny"
+    if [[ -n "$DENY_CMD" && -n "$DENY_CMD_RESOLVED" ]]; then
+        if ! prepare_jwt_env "$ID_CMD" "root" "$ROOT_UID" "$ROOT_GID" 0 1 0 1; then
+            dump_debug
+            echo "failed to prepare JWT for deny test ($plugin_type)" >&2
+            exit 1
+        fi
+        write_token "$TTL_SECS"
+        cp "$TOKEN_FILE" "$deny_token"
+        log "running sudo command not in claim (fresh) ($DENY_CMD_RESOLVED)"
+        if output=$(run_sudo "$DENY_CMD_RESOLVED" 2>&1); then
+            echo "$output" >&2
+            dump_debug
+            echo "expected sudo to fail for $plugin_type when command not in claim (fresh)" >&2
+            exit 1
+        fi
+    fi
+
     if [[ -n "$RUNAS_USER" && -n "$RUNAS_UID" ]]; then
         local runas_variants=(
             "with-ids:1:0"
@@ -643,6 +761,76 @@ run_once() {
         done
     fi
 
+    if [[ -n "$MISMATCH_RUNAS_USER" ]]; then
+        if ! prepare_jwt_env "$ID_CMD" "root" "$ROOT_UID" "$ROOT_GID" 0 1 0 1; then
+            dump_debug
+            echo "failed to prepare JWT for mismatch runas user ($plugin_type)" >&2
+            exit 1
+        fi
+        write_token "$TTL_SECS"
+        log "running sudo command with non-matching runas user ($MISMATCH_RUNAS_USER) ($plugin_type)"
+        if output=$(run_sudo -u "$MISMATCH_RUNAS_USER" "$ID_CMD" -u 2>&1); then
+            echo "$output" >&2
+            dump_debug
+            echo "expected sudo -u $MISMATCH_RUNAS_USER to fail for $plugin_type (runas mismatch)" >&2
+            exit 1
+        fi
+    fi
+
+    if [[ -n "$RUNAS_GROUP" && -n "$RUNAS_GROUP_GID" ]]; then
+        local group_variants=(
+            "with-ids:1:0"
+            "user-only:0:0"
+            "with-fakes:1:3"
+        )
+        local group_claims=(
+            "$RUNAS_GROUP"
+        )
+        for claim_group in "${group_claims[@]}"; do
+            for variant in "${group_variants[@]}"; do
+                IFS=':' read -r variant_label include_ids fake_count <<< "$variant"
+                if ! prepare_jwt_env "$ID_CMD" "root" "$ROOT_UID" "$ROOT_GID" 0 "$include_ids" "$fake_count" 1 "$claim_group"; then
+                    dump_debug
+                    echo "failed to prepare JWT for runas group ($RUNAS_GROUP) ($plugin_type) [$variant_label]" >&2
+                    exit 1
+                fi
+                write_token "$TTL_SECS"
+                log "running sudo command with runas group ($RUNAS_GROUP) ($plugin_type) [$variant_label]"
+                group_err="$WORKDIR/runas_group.stderr"
+                if ! output=$(run_sudo -g "$RUNAS_GROUP" "$ID_CMD" -g 2>"$group_err"); then
+                    cat "$group_err" >&2 || true
+                    dump_debug
+                    echo "expected sudo -g $RUNAS_GROUP to succeed for $plugin_type [$variant_label]" >&2
+                    exit 1
+                fi
+                output_trimmed=$(echo "$output" | tr -d '[:space:]')
+                if [[ "$output_trimmed" != "$RUNAS_GROUP_GID" ]]; then
+                    cat "$group_err" >&2 || true
+                    echo "$output" >&2
+                    dump_debug
+                    echo "expected sudo -g $RUNAS_GROUP to run as gid $RUNAS_GROUP_GID for $plugin_type [$variant_label]" >&2
+                    exit 1
+                fi
+            done
+        done
+    fi
+
+    if [[ -n "$RUNAS_GROUP" && -n "$MISMATCH_RUNAS_GROUP" ]]; then
+        if ! prepare_jwt_env "$ID_CMD" "root" "$ROOT_UID" "$ROOT_GID" 0 1 0 1 "$RUNAS_GROUP"; then
+            dump_debug
+            echo "failed to prepare JWT for mismatch runas group ($plugin_type)" >&2
+            exit 1
+        fi
+        write_token "$TTL_SECS"
+        log "running sudo command with non-matching runas group ($MISMATCH_RUNAS_GROUP) ($plugin_type)"
+        if output=$(run_sudo -g "$MISMATCH_RUNAS_GROUP" "$ID_CMD" -g 2>&1); then
+            echo "$output" >&2
+            dump_debug
+            echo "expected sudo -g $MISMATCH_RUNAS_GROUP to fail for $plugin_type (runas group mismatch)" >&2
+            exit 1
+        fi
+    fi
+
     if [[ "$plugin_type" == "approval" && -n "$ALLOW_SETENV_USER" && -n "$ALLOW_SETENV_UID" ]]; then
         local setenv_variants=(
             "with-ids:1:0"
@@ -651,7 +839,7 @@ run_once() {
         )
         for variant in "${setenv_variants[@]}"; do
             IFS=':' read -r variant_label include_ids fake_count <<< "$variant"
-            if ! prepare_jwt_env "$ID_CMD" "$ALLOW_SETENV_USER" "$ALLOW_SETENV_UID" "$ALLOW_SETENV_GID" 1 "$include_ids" "$fake_count"; then
+            if ! prepare_jwt_env "$ID_CMD" "$ALLOW_SETENV_USER" "$ALLOW_SETENV_UID" "$ALLOW_SETENV_GID" 1 "$include_ids" "$fake_count" 0; then
                 dump_debug
                 echo "failed to prepare JWT for setenv user ($ALLOW_SETENV_USER) [$variant_label]" >&2
                 exit 1
@@ -679,7 +867,7 @@ run_once() {
             export "$SETENV_TEST_VAR"="$SETENV_TEST_VALUE"
             for variant in "${setenv_variants[@]}"; do
                 IFS=':' read -r variant_label include_ids fake_count <<< "$variant"
-                if ! prepare_jwt_env "$PRINTENV_CMD" "$ALLOW_SETENV_USER" "$ALLOW_SETENV_UID" "$ALLOW_SETENV_GID" 1 "$include_ids" "$fake_count"; then
+                if ! prepare_jwt_env "$PRINTENV_CMD" "$ALLOW_SETENV_USER" "$ALLOW_SETENV_UID" "$ALLOW_SETENV_GID" 1 "$include_ids" "$fake_count" 0; then
                     dump_debug
                     echo "failed to prepare JWT for setenv printenv ($ALLOW_SETENV_USER) [$variant_label]" >&2
                     exit 1
@@ -720,6 +908,17 @@ run_once() {
             exit 1
         fi
     done
+
+    if [[ -n "$DENY_CMD" && -n "$DENY_CMD_RESOLVED" && -f "$deny_token" ]]; then
+        cp "$deny_token" "$TOKEN_FILE"
+        log "running sudo command not in claim (expired) ($DENY_CMD_RESOLVED)"
+        if output=$(run_sudo "$DENY_CMD_RESOLVED" 2>&1); then
+            echo "$output" >&2
+            dump_debug
+            echo "expected sudo to fail for $plugin_type when command not in claim (expired)" >&2
+            exit 1
+        fi
+    fi
 }
 
 run_once approval
