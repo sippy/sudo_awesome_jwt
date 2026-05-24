@@ -1327,17 +1327,21 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
         const char *cmd_path = get_kv(command_info, "command_path");
         const char *runas_user_dbg = get_kv(command_info, "runas_user");
         const char *runas_uid_dbg = get_kv(command_info, "runas_uid");
+        const char *runas_euid_dbg = get_kv(command_info, "runas_euid");
         const char *runas_gid_dbg = get_kv(command_info, "runas_gid");
+        const char *runas_egid_dbg = get_kv(command_info, "runas_egid");
         const char *runas_group_dbg = get_kv(command_info, "runas_group");
         const char *setenv_dbg = get_kv(command_info, "setenv");
         const char *sudo_cmd = get_run_env("SUDO_COMMAND");
-        debug_log("%s: command_info command=%s command_path=%s runas_user=%s runas_uid=%s runas_gid=%s setenv=%s\n",
+        debug_log("%s: command_info command=%s command_path=%s runas_user=%s runas_uid=%s runas_euid=%s runas_gid=%s runas_egid=%s setenv=%s\n",
                   SUDO_AWESOME_JWT_NAME,
                   cmd_info ? cmd_info : "(null)",
                   cmd_path ? cmd_path : "(null)",
                   runas_user_dbg ? runas_user_dbg : "(null)",
                   runas_uid_dbg ? runas_uid_dbg : "(null)",
+                  runas_euid_dbg ? runas_euid_dbg : "(null)",
                   runas_gid_dbg ? runas_gid_dbg : "(null)",
+                  runas_egid_dbg ? runas_egid_dbg : "(null)",
                   setenv_dbg ? setenv_dbg : "(null)");
         debug_log("%s: command_info runas_group=%s\n",
                   SUDO_AWESOME_JWT_NAME,

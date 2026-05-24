@@ -815,6 +815,78 @@ run_once() {
         done
     fi
 
+    if [[ -n "$RUNAS_USER" && -n "$RUNAS_UID" && -n "$RUNAS_GROUP" && -n "$RUNAS_GROUP_GID" ]]; then
+        if ! prepare_jwt_env "$ID_CMD" "$RUNAS_USER" "$RUNAS_UID" "$RUNAS_GID" 0 0 0 1 "$RUNAS_GROUP"; then
+            dump_debug
+            echo "failed to prepare JWT for runas user/group ($RUNAS_USER:$RUNAS_GROUP) ($plugin_type)" >&2
+            exit 1
+        fi
+        write_token "$TTL_SECS"
+        log "running sudo command with runas user/group ($RUNAS_USER:$RUNAS_GROUP) ($plugin_type)"
+        user_group_err="$WORKDIR/runas_user_group.stderr"
+        if ! output=$(run_sudo -u "$RUNAS_USER" -g "$RUNAS_GROUP" "$ID_CMD" -u 2>"$user_group_err"); then
+            cat "$user_group_err" >&2 || true
+            dump_debug
+            echo "expected sudo -u $RUNAS_USER -g $RUNAS_GROUP to succeed for $plugin_type" >&2
+            exit 1
+        fi
+        output_trimmed=$(echo "$output" | tr -d '[:space:]')
+        if [[ "$output_trimmed" != "$RUNAS_UID" ]]; then
+            cat "$user_group_err" >&2 || true
+            echo "$output" >&2
+            dump_debug
+            echo "expected sudo -u $RUNAS_USER -g $RUNAS_GROUP to run as uid $RUNAS_UID for $plugin_type" >&2
+            exit 1
+        fi
+
+        if ! prepare_jwt_env "$ID_CMD" "$RUNAS_USER" "$RUNAS_UID" "$RUNAS_GID" 0 0 0 1 "$RUNAS_GROUP"; then
+            dump_debug
+            echo "failed to prepare JWT for runas user/group gid check ($RUNAS_USER:$RUNAS_GROUP) ($plugin_type)" >&2
+            exit 1
+        fi
+        write_token "$TTL_SECS"
+        if ! output=$(run_sudo -u "$RUNAS_USER" -g "$RUNAS_GROUP" "$ID_CMD" 2>"$user_group_err"); then
+            cat "$user_group_err" >&2 || true
+            dump_debug
+            echo "expected sudo -u $RUNAS_USER -g $RUNAS_GROUP id to succeed for $plugin_type" >&2
+            exit 1
+        fi
+        if [[ "$output" != *"gid=$RUNAS_GROUP_GID"* && "$output" != *"egid=$RUNAS_GROUP_GID"* ]]; then
+            cat "$user_group_err" >&2 || true
+            echo "$output" >&2
+            dump_debug
+            echo "expected sudo -u $RUNAS_USER -g $RUNAS_GROUP to run with gid or egid $RUNAS_GROUP_GID for $plugin_type" >&2
+            exit 1
+        fi
+    fi
+
+    if [[ "$plugin_type" == "policy" && -n "$RUNAS_USER" && -n "$RUNAS_UID" && -n "$RUNAS_GROUP" && -n "$RUNAS_GROUP_GID" ]]; then
+        local config_saved="$WORKDIR/config.before_only_user_bypass"
+        cp "$CONFIG_FILE" "$config_saved"
+        cat >> "$CONFIG_FILE" <<'EOF_ONLY_USER_BYPASS'
+only_user = "__sudo_awesome_jwt_unmatched_user__"
+EOF_ONLY_USER_BYPASS
+        rm -f "$TOKEN_FILE"
+
+        log "running sudo command with runas user/group and non-matching only_user (policy)"
+        user_group_err="$WORKDIR/runas_user_group_only_user.stderr"
+        if ! output=$(run_sudo -u "$RUNAS_USER" -g "$RUNAS_GROUP" "$ID_CMD" 2>"$user_group_err"); then
+            cat "$user_group_err" >&2 || true
+            dump_debug
+            echo "expected sudo -u $RUNAS_USER -g $RUNAS_GROUP to succeed when only_user does not match for policy" >&2
+            exit 1
+        fi
+        if [[ "$output" != *"gid=$RUNAS_GROUP_GID"* && "$output" != *"egid=$RUNAS_GROUP_GID"* ]]; then
+            cat "$user_group_err" >&2 || true
+            echo "$output" >&2
+            dump_debug
+            echo "expected sudo -u $RUNAS_USER -g $RUNAS_GROUP to run with gid or egid $RUNAS_GROUP_GID when only_user does not match for policy" >&2
+            exit 1
+        fi
+
+        cp "$config_saved" "$CONFIG_FILE"
+    fi
+
     if [[ -n "$RUNAS_GROUP" && -n "$MISMATCH_RUNAS_GROUP" ]]; then
         if ! prepare_jwt_env "$ID_CMD" "root" "$ROOT_UID" "$ROOT_GID" 0 1 0 1 "$RUNAS_GROUP"; then
             dump_debug

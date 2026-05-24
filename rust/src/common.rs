@@ -72,6 +72,7 @@ pub(crate) struct State {
     pub(crate) runas_user: Option<String>,
     pub(crate) runas_uid: Option<u32>,
     pub(crate) runas_gid: Option<u32>,
+    pub(crate) runas_egid: Option<u32>,
     pub(crate) runas_group: Option<String>,
     pub(crate) setenv_requested: bool,
     pub(crate) sudo_printf: SudoPrintfT,
@@ -204,6 +205,7 @@ pub(crate) fn debug_log_approval(msg: &str) {
         state.runas_user = None;
         state.runas_uid = None;
         state.runas_gid = None;
+        state.runas_egid = None;
         state.runas_group = None;
         state.setenv_requested = false;
         debug_dump_plugin_options(state, plugin_options, prefix);
@@ -269,6 +271,10 @@ pub(crate) fn debug_log_approval(msg: &str) {
                     } else if let Some(val) = s.strip_prefix("runas_group=") {
                         if !val.is_empty() {
                             state.runas_group = Some(val.to_string());
+                            state.runas_egid = resolve_group_gid(val);
+                            if let Some(egid) = state.runas_egid {
+                                state.runas_gid = Some(egid);
+                            }
                         }
                     } else if let Some(val) = s.strip_prefix("runas_uid=") {
                         if let Ok(parsed) = val.parse::<u32>() {
@@ -342,6 +348,7 @@ pub(crate) fn sudo_jwt_close_internal(close_label: &str, log_fn: fn(&State, &str
         state.runas_user = None;
         state.runas_uid = None;
         state.runas_gid = None;
+        state.runas_egid = None;
         state.runas_group = None;
         state.setenv_requested = false;
         state.sudo_printf = None;
@@ -419,12 +426,32 @@ fn debug_dump_user_env(state: &State, entries: &[CString]) {
     }
 }
 
+fn resolve_group_gid(group: &str) -> Option<u32> {
+    if group.is_empty() {
+        return None;
+    }
+    if let Ok(gid) = group.parse::<u32>() {
+        return Some(gid);
+    }
+
+    let c_group = CString::new(group).ok()?;
+    unsafe {
+        let gr = libc::getgrnam(c_group.as_ptr());
+        if gr.is_null() {
+            None
+        } else {
+            Some((*gr).gr_gid as u32)
+        }
+    }
+}
+
 pub(crate) fn build_command_info_with_path(
     cmd: &str,
     cmd_path: &str,
     runas_user: Option<&str>,
     runas_uid: Option<u32>,
     runas_gid: Option<u32>,
+    runas_egid: Option<u32>,
     runas_group: Option<&str>,
 ) -> (Vec<CString>, Vec<usize>) {
     let cwd = std::env::current_dir()
@@ -439,7 +466,11 @@ pub(crate) fn build_command_info_with_path(
     let runas_gid = runas_gid.unwrap_or(SUDO_AWESOME_JWT_RUNAS_GID_DEFAULT);
     entries.push(CString::new(format!("runas_user={runas_user}")).unwrap());
     entries.push(CString::new(format!("runas_uid={runas_uid}")).unwrap());
+    entries.push(CString::new(format!("runas_euid={runas_uid}")).unwrap());
     entries.push(CString::new(format!("runas_gid={runas_gid}")).unwrap());
+    if let Some(egid) = runas_egid {
+        entries.push(CString::new(format!("runas_egid={egid}")).unwrap());
+    }
     if let Some(group) = runas_group {
         if !group.is_empty() {
             entries.push(CString::new(format!("runas_group={group}")).unwrap());
