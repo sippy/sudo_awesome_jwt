@@ -193,6 +193,83 @@ static char **dup_user_env(char * const envp[]) {
     return out;
 }
 
+static size_t env_key_len(const char *entry) {
+    const char *eq = entry ? strchr(entry, '=') : NULL;
+    return eq ? (size_t)(eq - entry) : (entry ? strlen(entry) : 0);
+}
+
+static int env_same_key(const char *a, const char *b) {
+    size_t a_len = env_key_len(a);
+    size_t b_len = env_key_len(b);
+    return a_len > 0 && a_len == b_len && strncmp(a, b, a_len) == 0;
+}
+
+static int env_overridden_by(char * const env_add[], const char *entry) {
+    if (!env_add || !entry) {
+        return 0;
+    }
+    for (size_t i = 0; env_add[i]; i++) {
+        if (env_same_key(env_add[i], entry)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static char **merge_user_env(char * const base[], char * const env_add[]) {
+    size_t base_count = 0;
+    size_t add_count = 0;
+    while (base && base[base_count]) {
+        base_count++;
+    }
+    while (env_add && env_add[add_count]) {
+        add_count++;
+    }
+    if (add_count == 0) {
+        return NULL;
+    }
+
+    char **out = calloc(base_count + add_count + 1, sizeof(char *));
+    if (!out) {
+        return NULL;
+    }
+
+    size_t idx = 0;
+    for (size_t i = 0; base && base[i]; i++) {
+        if (env_overridden_by(env_add, base[i])) {
+            continue;
+        }
+        out[idx] = strdup(base[i]);
+        if (!out[idx]) {
+            free_user_env(out);
+            return NULL;
+        }
+        idx++;
+    }
+    for (size_t i = 0; env_add && env_add[i]; i++) {
+        out[idx] = strdup(env_add[i]);
+        if (!out[idx]) {
+            free_user_env(out);
+            return NULL;
+        }
+        idx++;
+    }
+    out[idx] = NULL;
+    return out;
+}
+
+static void apply_env_add(char *env_add[]) {
+    char **merged = merge_user_env(g_user_env, env_add);
+    if (!merged) {
+        return;
+    }
+    if (g_user_env_alloc) {
+        free_user_env(g_user_env_alloc);
+    }
+    g_user_env_alloc = merged;
+    g_user_env = g_user_env_alloc;
+}
+
 static char **build_fallback_env(void) {
     const char *path = getenv("PATH");
     if (!path) {
@@ -410,9 +487,9 @@ static int policy_check(int argc, char * const argv[], char *env_add[],
                         char **command_info[], char **argv_out[],
                         char **user_env_out[], const char **errstr) {
     (void)argc;
-    (void)env_add;
 
     policy_debug("policy_check");
+    apply_env_add(env_add);
     char *resolved = resolve_command_path((argv && argv[0]) ? argv[0] : NULL);
     const char *cmd_path = resolved ? resolved : (argv && argv[0]) ? argv[0] : "";
     const char *cmd_for_info = resolved ? cmd_path : (argv && argv[0]) ? argv[0] : "";

@@ -884,6 +884,26 @@ EOF_ONLY_USER_BYPASS
             exit 1
         fi
 
+        if command -v "$PRINTENV_CMD" >/dev/null 2>&1; then
+            local track_value="unstable/new"
+            log "running sudo command with env assignment and non-matching only_user (policy)"
+            env_add_err="$WORKDIR/env_add_only_user.stderr"
+            if ! output=$(run_sudo -u root "TRACK=$track_value" "$PRINTENV_CMD" TRACK 2>"$env_add_err"); then
+                cat "$env_add_err" >&2 || true
+                dump_debug
+                echo "expected sudo TRACK=$track_value printenv TRACK to succeed when only_user does not match for policy" >&2
+                exit 1
+            fi
+            output_trimmed=$(echo "$output" | tr -d '[:space:]')
+            if [[ "$output_trimmed" != "$track_value" ]]; then
+                cat "$env_add_err" >&2 || true
+                echo "$output" >&2
+                dump_debug
+                echo "expected sudo TRACK=$track_value printenv TRACK to preserve env assignment when only_user does not match for policy" >&2
+                exit 1
+            fi
+        fi
+
         cp "$config_saved" "$CONFIG_FILE"
     fi
 

@@ -597,6 +597,58 @@ pub(crate) fn build_user_env(user_env: *const *const c_char) -> Option<(Vec<CStr
     Some((entries, ptrs))
 }
 
+fn env_key(entry: &[u8]) -> &[u8] {
+    match entry.iter().position(|b| *b == b'=') {
+        Some(pos) => &entry[..pos],
+        None => entry,
+    }
+}
+
+fn env_same_key(a: &[u8], b: &[u8]) -> bool {
+    let a_key = env_key(a);
+    let b_key = env_key(b);
+    !a_key.is_empty() && a_key == b_key
+}
+
+pub(crate) fn merge_env_add(state: &mut State, env_add: *const *const c_char) {
+    if env_add.is_null() {
+        return;
+    }
+
+    let mut additions = Vec::new();
+    unsafe {
+        let mut idx = 0;
+        loop {
+            let ptr = *env_add.add(idx);
+            if ptr.is_null() {
+                break;
+            }
+            let raw = CStr::from_ptr(ptr).to_bytes();
+            if let Ok(cstr) = CString::new(raw) {
+                additions.push(cstr);
+            }
+            idx += 1;
+        }
+    }
+    if additions.is_empty() {
+        return;
+    }
+
+    let mut entries = state.user_env.take().unwrap_or_default();
+    entries.retain(|entry| {
+        let existing = entry.as_bytes();
+        !additions
+            .iter()
+            .any(|addition| env_same_key(addition.as_bytes(), existing))
+    });
+    entries.extend(additions);
+
+    let mut ptrs: Vec<usize> = entries.iter().map(|c| c.as_ptr() as usize).collect();
+    ptrs.push(0);
+    state.user_env = Some(entries);
+    state.user_env_ptrs = Some(ptrs);
+}
+
 fn build_fallback_env() -> Option<(Vec<CString>, Vec<usize>)> {
     let path = std::env::var("PATH").ok()?;
     let entry = CString::new(format!("PATH={path}")).ok()?;

@@ -41,7 +41,7 @@ extern "C" fn sudo_jwt_policy_show_version(_verbose: c_int) -> c_int {
 extern "C" fn sudo_jwt_policy_check(
     _argc: c_int,
     argv: *const *const c_char,
-    _env_add: *const *const c_char,
+    env_add: *const *const c_char,
     command_info: *mut *const *const c_char,
     argv_out: *mut *const *const c_char,
     user_env_out: *mut *const *const c_char,
@@ -49,6 +49,7 @@ extern "C" fn sudo_jwt_policy_check(
 ) -> c_int {
     debug_log_policy("policy_check");
     unsafe {
+        with_state(|state| merge_env_add(state, env_add));
         let cmd = if !argv.is_null() && !(*argv).is_null() {
             CStr::from_ptr(*argv).to_string_lossy().into_owned()
         } else {
