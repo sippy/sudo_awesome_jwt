@@ -22,9 +22,11 @@ static char *g_runas_group;
 static uid_t g_runas_uid;
 static gid_t g_runas_gid;
 static gid_t g_runas_egid;
+static gid_t g_runas_user_gid;
 static int g_runas_uid_set;
 static int g_runas_gid_set;
 static int g_runas_egid_set;
+static int g_runas_user_gid_set;
 
 static void policy_debug(const char *msg) {
     jwt_common_debug("%s:%s\n", SUDO_AWESOME_JWT_POLICY, msg);
@@ -79,6 +81,7 @@ static void reset_runas(void) {
     g_runas_uid_set = 0;
     g_runas_gid_set = 0;
     g_runas_egid_set = 0;
+    g_runas_user_gid_set = 0;
 }
 
 static int parse_gid_value(const char *val, gid_t *gid_out) {
@@ -106,6 +109,98 @@ static int resolve_group_gid(const char *group, gid_t *gid_out) {
     }
     *gid_out = gr->gr_gid;
     return 0;
+}
+
+static int add_gid_unique(gid_t *groups, int *count, int capacity, gid_t gid) {
+    if (!groups || !count) {
+        return -1;
+    }
+    for (int i = 0; i < *count; i++) {
+        if (groups[i] == gid) {
+            return 0;
+        }
+    }
+    if (*count >= capacity) {
+        return -1;
+    }
+    groups[(*count)++] = gid;
+    return 0;
+}
+
+static char *format_gid_list(const gid_t *groups, int count) {
+    if (!groups || count <= 0) {
+        return NULL;
+    }
+
+    size_t total = 1;
+    for (int i = 0; i < count; i++) {
+        total += 32;
+    }
+
+    char *out = malloc(total);
+    if (!out) {
+        return NULL;
+    }
+    out[0] = '\0';
+
+    for (int i = 0; i < count; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%s%u", i == 0 ? "" : ",", (unsigned)groups[i]);
+        strncat(out, buf, total - strlen(out) - 1);
+    }
+    return out;
+}
+
+static char *build_runas_groups(const char *runas_user) {
+    if (!runas_user || !*runas_user) {
+        return NULL;
+    }
+
+    gid_t base_gid = g_runas_user_gid_set ? g_runas_user_gid :
+        (g_runas_gid_set ? g_runas_gid : SUDO_AWESOME_JWT_RUNAS_GID_DEFAULT);
+    int capacity = 16;
+    int ngroups = capacity;
+    gid_t *groups = malloc((size_t)capacity * sizeof(gid_t));
+    if (!groups) {
+        return NULL;
+    }
+
+    while (getgrouplist(runas_user, base_gid, groups, &ngroups) == -1) {
+        if (ngroups <= 0 || ngroups > 1024) {
+            free(groups);
+            return NULL;
+        }
+        capacity = ngroups > capacity ? ngroups : capacity * 2;
+        gid_t *tmp = realloc(groups, (size_t)capacity * sizeof(gid_t));
+        if (!tmp) {
+            free(groups);
+            return NULL;
+        }
+        groups = tmp;
+        ngroups = capacity;
+    }
+
+    int count = ngroups;
+    if (g_runas_gid_set && add_gid_unique(groups, &count, capacity, g_runas_gid) != 0) {
+        gid_t *tmp = realloc(groups, (size_t)(capacity + 1) * sizeof(gid_t));
+        if (tmp) {
+            groups = tmp;
+            capacity++;
+            add_gid_unique(groups, &count, capacity, g_runas_gid);
+        }
+    }
+    if (g_runas_egid_set && add_gid_unique(groups, &count, capacity, g_runas_egid) != 0) {
+        gid_t *tmp = realloc(groups, (size_t)(capacity + 1) * sizeof(gid_t));
+        if (tmp) {
+            groups = tmp;
+            capacity++;
+            add_gid_unique(groups, &count, capacity, g_runas_egid);
+        }
+    }
+
+    char *out = format_gid_list(groups, count);
+    free(groups);
+    return out;
 }
 
 static void parse_runas_settings(char * const settings[]) {
@@ -153,13 +248,15 @@ static void parse_runas_settings(char * const settings[]) {
 }
 
 static void fill_runas_from_user(void) {
-    if (!g_runas_user || (g_runas_uid_set && g_runas_gid_set)) {
+    if (!g_runas_user || (g_runas_uid_set && g_runas_gid_set && g_runas_user_gid_set)) {
         return;
     }
     struct passwd *pw = getpwnam(g_runas_user);
     if (!pw) {
         return;
     }
+    g_runas_user_gid = pw->pw_gid;
+    g_runas_user_gid_set = 1;
     if (!g_runas_uid_set) {
         g_runas_uid = pw->pw_uid;
         g_runas_uid_set = 1;
@@ -316,6 +413,8 @@ static char **build_command_info(char * const argv[], const char *cmd, const cha
         cwd = "/";
     }
 
+    const char *runas_user = g_runas_user ? g_runas_user : SUDO_AWESOME_JWT_RUNAS_USER_DEFAULT;
+    char *runas_groups = build_runas_groups(runas_user);
     size_t total = 7;
     if (g_runas_group) {
         total++;
@@ -323,14 +422,17 @@ static char **build_command_info(char * const argv[], const char *cmd, const cha
     if (g_runas_egid_set) {
         total++;
     }
+    if (runas_groups) {
+        total++;
+    }
     char **info = calloc(total + 1, sizeof(char *));
     if (!info) {
+        free(runas_groups);
         return NULL;
     }
     size_t idx = 0;
     info[idx++] = dup_kv("command", cmd);
     info[idx++] = dup_kv("command_path", cmd_path ? cmd_path : cmd);
-    const char *runas_user = g_runas_user ? g_runas_user : SUDO_AWESOME_JWT_RUNAS_USER_DEFAULT;
     char uid_buf[32];
     char gid_buf[32];
     snprintf(uid_buf, sizeof(uid_buf), "%u",
@@ -349,8 +451,12 @@ static char **build_command_info(char * const argv[], const char *cmd, const cha
     if (g_runas_group) {
         info[idx++] = dup_kv("runas_group", g_runas_group);
     }
+    if (runas_groups) {
+        info[idx++] = dup_kv("runas_groups", runas_groups);
+    }
     info[idx++] = dup_kv("cwd", cwd);
     info[idx] = NULL;
+    free(runas_groups);
 
     for (size_t i = 0; i < idx; i++) {
         if (!info[i]) {

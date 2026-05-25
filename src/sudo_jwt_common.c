@@ -1331,6 +1331,7 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
         const char *runas_gid_dbg = get_kv(command_info, "runas_gid");
         const char *runas_egid_dbg = get_kv(command_info, "runas_egid");
         const char *runas_group_dbg = get_kv(command_info, "runas_group");
+        const char *runas_groups_dbg = get_kv(command_info, "runas_groups");
         const char *setenv_dbg = get_kv(command_info, "setenv");
         const char *sudo_cmd = get_run_env("SUDO_COMMAND");
         debug_log("%s: command_info command=%s command_path=%s runas_user=%s runas_uid=%s runas_euid=%s runas_gid=%s runas_egid=%s setenv=%s\n",
@@ -1346,6 +1347,9 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
         debug_log("%s: command_info runas_group=%s\n",
                   SUDO_AWESOME_JWT_NAME,
                   runas_group_dbg ? runas_group_dbg : "(null)");
+        debug_log("%s: command_info runas_groups=%s\n",
+                  SUDO_AWESOME_JWT_NAME,
+                  runas_groups_dbg ? runas_groups_dbg : "(null)");
         if (sudo_cmd) {
             debug_log("%s: SUDO_COMMAND=%s\n", SUDO_AWESOME_JWT_NAME, sudo_cmd);
         }

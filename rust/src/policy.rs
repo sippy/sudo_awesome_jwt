@@ -71,6 +71,7 @@ extern "C" fn sudo_jwt_policy_check(
                     state.runas_uid,
                     state.runas_gid,
                     state.runas_egid,
+                    state.runas_user_gid,
                     state.runas_group.as_deref(),
                 );
                 debug_dump_command_info(state, &entries);

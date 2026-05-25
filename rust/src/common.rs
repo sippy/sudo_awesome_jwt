@@ -73,6 +73,7 @@ pub(crate) struct State {
     pub(crate) runas_uid: Option<u32>,
     pub(crate) runas_gid: Option<u32>,
     pub(crate) runas_egid: Option<u32>,
+    pub(crate) runas_user_gid: Option<u32>,
     pub(crate) runas_group: Option<String>,
     pub(crate) setenv_requested: bool,
     pub(crate) sudo_printf: SudoPrintfT,
@@ -206,6 +207,7 @@ pub(crate) fn debug_log_approval(msg: &str) {
         state.runas_uid = None;
         state.runas_gid = None;
         state.runas_egid = None;
+        state.runas_user_gid = None;
         state.runas_group = None;
         state.setenv_requested = false;
         debug_dump_plugin_options(state, plugin_options, prefix);
@@ -291,7 +293,7 @@ pub(crate) fn debug_log_approval(msg: &str) {
         }
 
         if state.runas_user.is_some()
-            && (state.runas_uid.is_none() || state.runas_gid.is_none())
+            && (state.runas_uid.is_none() || state.runas_gid.is_none() || state.runas_user_gid.is_none())
         {
             if let Some(ref user) = state.runas_user {
                 if let Ok(c_user) = CString::new(user.as_str()) {
@@ -299,6 +301,7 @@ pub(crate) fn debug_log_approval(msg: &str) {
                         let pw = libc::getpwnam(c_user.as_ptr());
                         if !pw.is_null() {
                             let pw_ref = &*pw;
+                            state.runas_user_gid = Some(pw_ref.pw_gid);
                             if state.runas_uid.is_none() {
                                 state.runas_uid = Some(pw_ref.pw_uid);
                             }
@@ -349,6 +352,7 @@ pub(crate) fn sudo_jwt_close_internal(close_label: &str, log_fn: fn(&State, &str
         state.runas_uid = None;
         state.runas_gid = None;
         state.runas_egid = None;
+        state.runas_user_gid = None;
         state.runas_group = None;
         state.setenv_requested = false;
         state.sudo_printf = None;
@@ -445,6 +449,67 @@ fn resolve_group_gid(group: &str) -> Option<u32> {
     }
 }
 
+fn push_gid_unique(groups: &mut Vec<libc::gid_t>, gid: libc::gid_t) {
+    if !groups.iter().any(|existing| *existing == gid) {
+        groups.push(gid);
+    }
+}
+
+fn build_runas_groups(
+    runas_user: &str,
+    user_gid: Option<u32>,
+    runas_gid: u32,
+    runas_egid: Option<u32>,
+) -> Option<String> {
+    if runas_user.is_empty() {
+        return None;
+    }
+
+    let base_gid = user_gid.unwrap_or(runas_gid) as libc::gid_t;
+    let c_user = CString::new(runas_user).ok()?;
+    let mut ngroups: libc::c_int = 16;
+    let mut groups = vec![0 as libc::gid_t; ngroups as usize];
+
+    loop {
+        let capacity = groups.len();
+        let rc = unsafe {
+            libc::getgrouplist(c_user.as_ptr(), base_gid, groups.as_mut_ptr(), &mut ngroups)
+        };
+        if rc != -1 {
+            if ngroups >= 0 {
+                groups.truncate(ngroups as usize);
+            }
+            break;
+        }
+        if ngroups <= 0 || ngroups > 1024 {
+            return None;
+        }
+        let next_capacity = if ngroups as usize > capacity {
+            ngroups as usize
+        } else {
+            capacity.saturating_mul(2)
+        };
+        if next_capacity == 0 || next_capacity > 1024 {
+            return None;
+        }
+        groups.resize(next_capacity, 0);
+        ngroups = next_capacity as libc::c_int;
+    }
+
+    push_gid_unique(&mut groups, runas_gid as libc::gid_t);
+    if let Some(egid) = runas_egid {
+        push_gid_unique(&mut groups, egid as libc::gid_t);
+    }
+
+    Some(
+        groups
+            .iter()
+            .map(|gid| (*gid as u32).to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
 pub(crate) fn build_command_info_with_path(
     cmd: &str,
     cmd_path: &str,
@@ -452,6 +517,7 @@ pub(crate) fn build_command_info_with_path(
     runas_uid: Option<u32>,
     runas_gid: Option<u32>,
     runas_egid: Option<u32>,
+    runas_user_gid: Option<u32>,
     runas_group: Option<&str>,
 ) -> (Vec<CString>, Vec<usize>) {
     let cwd = std::env::current_dir()
@@ -475,6 +541,9 @@ pub(crate) fn build_command_info_with_path(
         if !group.is_empty() {
             entries.push(CString::new(format!("runas_group={group}")).unwrap());
         }
+    }
+    if let Some(groups) = build_runas_groups(runas_user, runas_user_gid, runas_gid, runas_egid) {
+        entries.push(CString::new(format!("runas_groups={groups}")).unwrap());
     }
     entries.push(CString::new(format!("cwd={cwd}")).unwrap());
     let mut ptrs: Vec<usize> = entries.iter().map(|c| c.as_ptr() as usize).collect();

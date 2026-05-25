@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 WORKDIR=$(mktemp -d /tmp/sudo-awesome-jwt-test.XXXXXX)
+TEST_SUFFIX=${WORKDIR##*.}
+TEST_SUFFIX=$(printf '%s' "$TEST_SUFFIX" | tr -cd 'A-Za-z0-9')
 SUDO_CONF=/etc/sudo.conf
 SUDO_CONF_BACKUP="$WORKDIR/sudo.conf.bak"
 CONFIG_FILE="$WORKDIR/sudo_awesome_jwt.conf"
@@ -25,6 +27,13 @@ RUNAS_UID=""
 RUNAS_GID=""
 RUNAS_GROUP=${SUDO_AWESOME_JWT_TEST_RUNAS_GROUP:-root}
 RUNAS_GROUP_GID=""
+MULTIGROUP_USER=""
+MULTIGROUP_UID=""
+MULTIGROUP_GID=""
+MULTIGROUP_GROUPS=""
+MULTIGROUP_PRIMARY=""
+MULTIGROUP_SECONDARY=""
+MULTIGROUP_CREATED=0
 DENY_CMD=${SUDO_AWESOME_JWT_TEST_DENY_COMMAND:-true}
 MISMATCH_RUNAS_USER=${SUDO_AWESOME_JWT_TEST_MISMATCH_USER:-}
 MISMATCH_RUNAS_GROUP=${SUDO_AWESOME_JWT_TEST_MISMATCH_GROUP:-}
@@ -413,7 +422,37 @@ run_privileged() {
     fi
 }
 
+cleanup_multigroup_user() {
+    if [[ "$MULTIGROUP_CREATED" != "1" ]]; then
+        return
+    fi
+
+    if command -v pw >/dev/null 2>&1; then
+        if [[ -n "$MULTIGROUP_USER" ]]; then
+            run_privileged pw userdel "$MULTIGROUP_USER" >/dev/null 2>&1 || true
+        fi
+        if [[ -n "$MULTIGROUP_SECONDARY" ]]; then
+            run_privileged pw groupdel "$MULTIGROUP_SECONDARY" >/dev/null 2>&1 || true
+        fi
+        if [[ -n "$MULTIGROUP_PRIMARY" ]]; then
+            run_privileged pw groupdel "$MULTIGROUP_PRIMARY" >/dev/null 2>&1 || true
+        fi
+    else
+        if [[ -n "$MULTIGROUP_USER" ]] && command -v userdel >/dev/null 2>&1; then
+            run_privileged userdel "$MULTIGROUP_USER" >/dev/null 2>&1 || true
+        fi
+        if [[ -n "$MULTIGROUP_SECONDARY" ]] && command -v groupdel >/dev/null 2>&1; then
+            run_privileged groupdel "$MULTIGROUP_SECONDARY" >/dev/null 2>&1 || true
+        fi
+        if [[ -n "$MULTIGROUP_PRIMARY" ]] && command -v groupdel >/dev/null 2>&1; then
+            run_privileged groupdel "$MULTIGROUP_PRIMARY" >/dev/null 2>&1 || true
+        fi
+    fi
+    MULTIGROUP_CREATED=0
+}
+
 cleanup() {
+    cleanup_multigroup_user
     if [[ -f "$SUDO_CONF_BACKUP" ]]; then
         run_privileged cp "$SUDO_CONF_BACKUP" "$SUDO_CONF"
     else
@@ -422,6 +461,45 @@ cleanup() {
     rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
+
+setup_multigroup_user() {
+    local shell_path="/usr/sbin/nologin"
+    if [[ ! -x "$shell_path" ]]; then
+        shell_path="/bin/false"
+    fi
+
+    MULTIGROUP_USER="sajwt_${TEST_SUFFIX}_u"
+    MULTIGROUP_PRIMARY="sajwt_${TEST_SUFFIX}_p"
+    MULTIGROUP_SECONDARY="sajwt_${TEST_SUFFIX}_s"
+
+    cleanup_multigroup_user
+
+    if command -v pw >/dev/null 2>&1; then
+        MULTIGROUP_CREATED=1
+        run_privileged pw groupadd "$MULTIGROUP_PRIMARY"
+        run_privileged pw groupadd "$MULTIGROUP_SECONDARY"
+        run_privileged pw useradd "$MULTIGROUP_USER" -g "$MULTIGROUP_PRIMARY" -G "$MULTIGROUP_SECONDARY" -s "$shell_path" -w no
+    elif command -v groupadd >/dev/null 2>&1 && command -v useradd >/dev/null 2>&1; then
+        MULTIGROUP_CREATED=1
+        run_privileged groupadd "$MULTIGROUP_PRIMARY"
+        run_privileged groupadd "$MULTIGROUP_SECONDARY"
+        run_privileged useradd -M -g "$MULTIGROUP_PRIMARY" -G "$MULTIGROUP_SECONDARY" -s "$shell_path" "$MULTIGROUP_USER"
+    else
+        log "skipping deterministic multi-group fixture: no supported user/group management tools"
+        MULTIGROUP_USER=""
+        MULTIGROUP_PRIMARY=""
+        MULTIGROUP_SECONDARY=""
+        return 0
+    fi
+
+    MULTIGROUP_UID=$("$ID_CMD" -u "$MULTIGROUP_USER" 2>/dev/null || true)
+    MULTIGROUP_GID=$("$ID_CMD" -g "$MULTIGROUP_USER" 2>/dev/null || true)
+    MULTIGROUP_GROUPS=$("$ID_CMD" -G "$MULTIGROUP_USER" 2>/dev/null || true)
+    if [[ -z "$MULTIGROUP_UID" || -z "$MULTIGROUP_GID" || -z "$MULTIGROUP_GROUPS" ]]; then
+        echo "failed to resolve deterministic multi-group user: $MULTIGROUP_USER" >&2
+        exit 1
+    fi
+}
 
 if ! command -v sudo >/dev/null; then
     echo "sudo not found" >&2
@@ -442,6 +520,8 @@ if [[ "$(id -u)" -ne 0 ]]; then
     echo "run this test as root (e.g. sudo -E $0) to ensure sudo.conf can be restored after expiry" >&2
     exit 1
 fi
+
+setup_multigroup_user
 
 if [[ "$DEBUG" == "1" ]]; then
     DEBUG_OPT=" debug=1"
@@ -756,6 +836,45 @@ run_once() {
                 echo "$output" >&2
                 dump_debug
                 echo "expected sudo -u $RUNAS_USER to run as uid $RUNAS_UID for $plugin_type [$variant_label]" >&2
+                exit 1
+            fi
+        done
+    fi
+
+    if [[ -n "$MULTIGROUP_USER" && -n "$MULTIGROUP_UID" && -n "$MULTIGROUP_GROUPS" ]]; then
+        read -r -a multigroup_expected_arr <<< "$MULTIGROUP_GROUPS"
+        if [[ "${#multigroup_expected_arr[@]}" -lt 2 ]]; then
+            echo "deterministic multi-group user $MULTIGROUP_USER has fewer than two groups: $MULTIGROUP_GROUPS" >&2
+            exit 1
+        fi
+        if ! prepare_jwt_env "$ID_CMD" "$MULTIGROUP_USER" "$MULTIGROUP_UID" "$MULTIGROUP_GID" 0 0 0 1; then
+            dump_debug
+            echo "failed to prepare JWT for deterministic runas supplementary groups ($MULTIGROUP_USER) ($plugin_type)" >&2
+            exit 1
+        fi
+        write_token "$TTL_SECS"
+        log "running sudo command with deterministic runas supplementary groups ($MULTIGROUP_USER) ($plugin_type)"
+        runas_groups_err="$WORKDIR/runas_groups.stderr"
+        if ! output=$(run_sudo -u "$MULTIGROUP_USER" "$ID_CMD" -G 2>"$runas_groups_err"); then
+            cat "$runas_groups_err" >&2 || true
+            dump_debug
+            echo "expected sudo -u $MULTIGROUP_USER id -G to succeed for $plugin_type" >&2
+            exit 1
+        fi
+        read -r -a output_groups_arr <<< "$output"
+        for expected_group in "${multigroup_expected_arr[@]}"; do
+            local found_group=0
+            for actual_group in "${output_groups_arr[@]}"; do
+                if [[ "$actual_group" == "$expected_group" ]]; then
+                    found_group=1
+                    break
+                fi
+            done
+            if [[ "$found_group" != "1" ]]; then
+                cat "$runas_groups_err" >&2 || true
+                echo "$output" >&2
+                dump_debug
+                echo "expected sudo -u $MULTIGROUP_USER id -G to include group $expected_group for $plugin_type" >&2
                 exit 1
             fi
         done
