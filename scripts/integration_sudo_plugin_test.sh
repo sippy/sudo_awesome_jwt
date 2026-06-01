@@ -1042,7 +1042,7 @@ EOF_ONLY_USER_BYPASS
         fi
     fi
 
-    if [[ "$plugin_type" == "approval" && -n "$ALLOW_SETENV_USER" && -n "$ALLOW_SETENV_UID" ]]; then
+    if [[ -n "$ALLOW_SETENV_USER" && -n "$ALLOW_SETENV_UID" ]]; then
         local setenv_variants=(
             "with-ids:1:0"
             "user-only:0:0"
@@ -1076,27 +1076,50 @@ EOF_ONLY_USER_BYPASS
 
         if command -v "$PRINTENV_CMD" >/dev/null 2>&1; then
             export "$SETENV_TEST_VAR"="$SETENV_TEST_VALUE"
+            local preserve_variants=(
+                "short:-E"
+                "long:--preserve-env=$SETENV_TEST_VAR"
+            )
             for variant in "${setenv_variants[@]}"; do
                 IFS=':' read -r variant_label include_ids fake_count <<< "$variant"
-                if ! prepare_jwt_env "$PRINTENV_CMD" "$ALLOW_SETENV_USER" "$ALLOW_SETENV_UID" "$ALLOW_SETENV_GID" 1 "$include_ids" "$fake_count" 0; then
+                for preserve_variant in "${preserve_variants[@]}"; do
+                    IFS=':' read -r preserve_label preserve_arg <<< "$preserve_variant"
+                    if ! prepare_jwt_env "$PRINTENV_CMD" "$ALLOW_SETENV_USER" "$ALLOW_SETENV_UID" "$ALLOW_SETENV_GID" 1 "$include_ids" "$fake_count" 0; then
+                        dump_debug
+                        echo "failed to prepare JWT for setenv printenv ($ALLOW_SETENV_USER) [$variant_label] [$preserve_label]" >&2
+                        exit 1
+                    fi
+                    write_token "$TTL_SECS"
+                    log "running sudo printenv with SETENV $preserve_arg ($ALLOW_SETENV_USER) ($plugin_type) [$variant_label]"
+                    setenv_err="$WORKDIR/setenv.stderr"
+                    if ! output=$(run_sudo "$preserve_arg" -u "$ALLOW_SETENV_USER" "$PRINTENV_CMD" "$SETENV_TEST_VAR" 2>"$setenv_err"); then
+                        cat "$setenv_err" >&2 || true
+                        dump_debug
+                        echo "expected sudo $preserve_arg -u $ALLOW_SETENV_USER printenv to succeed for $plugin_type [$variant_label]" >&2
+                        exit 1
+                    fi
+                    output_trimmed=$(echo "$output" | tr -d '[:space:]')
+                    if [[ "$output_trimmed" != "$SETENV_TEST_VALUE" ]]; then
+                        echo "$output" >&2
+                        dump_debug
+                        echo "expected sudo $preserve_arg -u $ALLOW_SETENV_USER printenv to return $SETENV_TEST_VALUE for $plugin_type [$variant_label]" >&2
+                        exit 1
+                    fi
+                done
+            done
+            for preserve_variant in "${preserve_variants[@]}"; do
+                IFS=':' read -r preserve_label preserve_arg <<< "$preserve_variant"
+                if ! prepare_jwt_env "$PRINTENV_CMD" "$ALLOW_SETENV_USER" "$ALLOW_SETENV_UID" "$ALLOW_SETENV_GID" 0 1 0 1; then
                     dump_debug
-                    echo "failed to prepare JWT for setenv printenv ($ALLOW_SETENV_USER) [$variant_label]" >&2
+                    echo "failed to prepare JWT without setenv printenv ($ALLOW_SETENV_USER) [$preserve_label]" >&2
                     exit 1
                 fi
                 write_token "$TTL_SECS"
-                log "running sudo printenv with SETENV ($ALLOW_SETENV_USER) ($plugin_type) [$variant_label]"
-                setenv_err="$WORKDIR/setenv.stderr"
-                if ! output=$(run_sudo -E -u "$ALLOW_SETENV_USER" "$PRINTENV_CMD" "$SETENV_TEST_VAR" 2>"$setenv_err"); then
-                    cat "$setenv_err" >&2 || true
-                    dump_debug
-                    echo "expected sudo -E -u $ALLOW_SETENV_USER printenv to succeed for $plugin_type [$variant_label]" >&2
-                    exit 1
-                fi
-                output_trimmed=$(echo "$output" | tr -d '[:space:]')
-                if [[ "$output_trimmed" != "$SETENV_TEST_VALUE" ]]; then
+                log "running sudo printenv without SETENV using $preserve_arg ($ALLOW_SETENV_USER) ($plugin_type)"
+                if output=$(run_sudo "$preserve_arg" -u "$ALLOW_SETENV_USER" "$PRINTENV_CMD" "$SETENV_TEST_VAR" 2>&1); then
                     echo "$output" >&2
                     dump_debug
-                    echo "expected sudo -E -u $ALLOW_SETENV_USER printenv to return $SETENV_TEST_VALUE for $plugin_type [$variant_label]" >&2
+                    echo "expected sudo $preserve_arg -u $ALLOW_SETENV_USER printenv to fail without setenv for $plugin_type" >&2
                     exit 1
                 fi
             done

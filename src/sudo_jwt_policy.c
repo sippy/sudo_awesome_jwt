@@ -247,6 +247,25 @@ static void parse_runas_settings(char * const settings[]) {
     }
 }
 
+static int parse_preserve_environment_setting(char * const settings[]) {
+    if (!settings) {
+        return 0;
+    }
+    for (size_t i = 0; settings[i]; i++) {
+        const char *opt = settings[i];
+        if (strncmp(opt, "preserve_environment=", 21) != 0) {
+            continue;
+        }
+        const char *val = opt + 21;
+        return strcmp(val, "true") == 0 || strcmp(val, "1") == 0 || strcmp(val, "yes") == 0;
+    }
+    return 0;
+}
+
+static int env_add_has_entries(char * const env_add[]) {
+    return env_add && env_add[0];
+}
+
 static void fill_runas_from_user(void) {
     if (!g_runas_user || (g_runas_uid_set && g_runas_gid_set && g_runas_user_gid_set)) {
         return;
@@ -543,13 +562,16 @@ static int policy_open(unsigned int version, sudo_conv_t conversation,
                        char * const user_info[], char * const user_env[],
                        char * const plugin_options[], const char **errstr) {
     (void)conversation;
-    (void)settings;
 
     jwt_common_parse_debug_options(plugin_options);
+    int setenv_requested = parse_preserve_environment_setting(settings);
     parse_runas_settings(settings);
     fill_runas_from_user();
     policy_debug("policy_open");
     int rc = jwt_common_open(version, sudo_plugin_printf, user_info, plugin_options, errstr);
+    if (rc > 0) {
+        jwt_common_set_setenv_requested(setenv_requested);
+    }
     g_user_env = NULL;
     g_user_env_alloc = NULL;
     if (user_env) {
@@ -595,6 +617,9 @@ static int policy_check(int argc, char * const argv[], char *env_add[],
     (void)argc;
 
     policy_debug("policy_check");
+    if (env_add_has_entries(env_add)) {
+        jwt_common_set_setenv_requested(1);
+    }
     apply_env_add(env_add);
     char *resolved = resolve_command_path((argv && argv[0]) ? argv[0] : NULL);
     const char *cmd_path = resolved ? resolved : (argv && argv[0]) ? argv[0] : "";

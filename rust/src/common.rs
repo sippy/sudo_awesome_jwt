@@ -286,6 +286,8 @@ pub(crate) fn debug_log_approval(msg: &str) {
                         if let Ok(parsed) = val.parse::<u32>() {
                             state.runas_gid = Some(parsed);
                         }
+                    } else if let Some(val) = s.strip_prefix("preserve_environment=") {
+                        state.setenv_requested = matches!(val, "true" | "1" | "yes");
                     }
                     idx += 1;
                 }
@@ -718,6 +720,10 @@ pub(crate) fn merge_env_add(state: &mut State, env_add: *const *const c_char) {
     state.user_env_ptrs = Some(ptrs);
 }
 
+pub(crate) fn env_add_has_entries(env_add: *const *const c_char) -> bool {
+    unsafe { !env_add.is_null() && !(*env_add).is_null() }
+}
+
 fn build_fallback_env() -> Option<(Vec<CString>, Vec<usize>)> {
     let path = std::env::var("PATH").ok()?;
     let entry = CString::new(format!("PATH={path}")).ok()?;
@@ -1024,7 +1030,7 @@ fn resolve_command_for_match(state: &State, command_info: *const *const c_char, 
     Ok(cmd)
 }
 
-fn command_allowed_by_jwt(state: &State, payload: &Value, command_info: *const *const c_char, run_argv: *const *const c_char, policy_mode: bool) -> Result<(), String> {
+fn command_allowed_by_jwt(state: &State, payload: &Value, command_info: *const *const c_char, run_argv: *const *const c_char, _policy_mode: bool) -> Result<(), String> {
     let cmd = resolve_command_for_match(state, command_info, run_argv)?;
     if debug_enabled() {
         log_debug(state, SUDO_AWESOME_JWT_NAME, &format!("resolved command={cmd}"));
@@ -1032,12 +1038,7 @@ fn command_allowed_by_jwt(state: &State, payload: &Value, command_info: *const *
     let cmds = payload.get("cmds").ok_or_else(|| "missing cmds".to_string())?;
     let cmds = cmds.as_array().ok_or_else(|| "invalid cmds".to_string())?;
     let (runas_user, runas_uid, runas_gid, runas_group) = runas_from_info(command_info);
-    if policy_mode {
-        if cmds.iter().any(|entry| entry.get("setenv").is_some()) {
-            return Err("setenv not supported in policy".to_string());
-        }
-    }
-    let actual_setenv = if policy_mode { false } else { state.setenv_requested };
+    let actual_setenv = state.setenv_requested;
 
     let mut best_score: i32 = -1;
     for entry in cmds {

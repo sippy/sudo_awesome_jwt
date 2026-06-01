@@ -119,7 +119,7 @@ The JWT must include a `cmds` array describing allowed commands for this token. 
 - optional `runas_uid`
 - optional `runas_gid`
 - optional `runas_group`
-- optional `setenv` (approval plugin only; if present in a policy token the request is denied)
+- optional `setenv` (requires `-E`/`--preserve-env` when true; rejects those options when false or omitted)
 
 If you need to allow multiple runas groups for the same command, add multiple entries (one per group).
 

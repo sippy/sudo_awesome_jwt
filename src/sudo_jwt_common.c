@@ -1310,6 +1310,7 @@ static int command_setenv_requested(char * const command_info[]) {
 
 static int command_allowed_by_jwt(struct jwt_payload *payload, char * const command_info[],
                                   char * const run_argv[], int policy_mode, const char **errstr) {
+    (void)policy_mode;
     char *cmd = resolve_command_for_match(run_argv, command_info);
     if (!cmd || !*cmd) {
         if (errstr) {
@@ -1389,7 +1390,7 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
 
     int idx = cmds_idx + 1;
     int count = payload->tokens[cmds_idx].size;
-    int actual_setenv = policy_mode ? 0 : command_setenv_requested(command_info);
+    int actual_setenv = command_setenv_requested(command_info);
     int best_score = -1;
     if (debug_enabled()) {
         debug_log("%s: cmds count=%d\n", SUDO_AWESOME_JWT_NAME, count);
@@ -1475,13 +1476,6 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
                     }
                 } else if (token_eq(payload->json, &payload->tokens[key_idx], "setenv")) {
                     have_setenv = 1;
-                    if (policy_mode) {
-                        if (errstr) {
-                            *errstr = "setenv not supported in policy";
-                        }
-                        free(cmd);
-                        return 0;
-                    }
                     int val = 0;
                     if (token_to_bool(payload->json, &payload->tokens[val_idx], &val) != 0) {
                         if (errstr) {

@@ -49,7 +49,12 @@ extern "C" fn sudo_jwt_policy_check(
 ) -> c_int {
     debug_log_policy("policy_check");
     unsafe {
-        with_state(|state| merge_env_add(state, env_add));
+        with_state(|state| {
+            if env_add_has_entries(env_add) {
+                state.setenv_requested = true;
+            }
+            merge_env_add(state, env_add);
+        });
         let cmd = if !argv.is_null() && !(*argv).is_null() {
             CStr::from_ptr(*argv).to_string_lossy().into_owned()
         } else {
