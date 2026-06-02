@@ -1,8 +1,15 @@
-# sudo-awesome-jwt (minimal)
+# sudo-awesome-jwt
 
 [![CI](https://github.com/sippy/sudo_awesome_jwt/actions/workflows/build.yml/badge.svg)](https://github.com/sippy/sudo_awesome_jwt/actions/workflows/build.yml)
 
-Minimal sudo approval + policy plugin that enforces a short-lived JWT stored in a file. The approval plugin runs after sudoers and can further restrict access, while the policy plugin can replace sudoers entirely.
+A sudo approval + policy plugin that authorizes sudo commands with a short-lived JWT stored in a file.
+
+The plugin supports two deployment modes:
+
+- **Approval mode:** keep an existing sudoers rule and require a valid JWT as an additional authorization factor. In this mode sudoers still decides the baseline permission, and `sudo-awesome-jwt` acts like command-scoped JWT "2FA" for entries that would otherwise be permanently allowed.
+- **Policy mode:** use the JWT plugin as the sudo policy plugin. In this mode a permanent sudoers command entry can be replaced by a short-lived token that names the command, runas identity, and environment permission for one job or workflow.
+
+This is intended for automation systems such as CI workers where a trusted signer can issue narrow, time-limited sudo capability tokens instead of leaving broad standing sudo permissions on disk.
 
 ## Build
 
@@ -24,9 +31,9 @@ Build notes:
   ```
   You can also override `OPENSSL_LIBS` directly if your platform needs different flags.
 
-## Rust version (optional)
+## Rust version
 
-An experimental Rust build lives in `rust/` and produces a cdylib with the same exported symbols (`approval`, `policy`).
+An alternate Rust implementation lives in `rust/` and produces a cdylib with the same exported symbols (`approval`, `policy`).
 
 Build:
 ```sh
@@ -38,6 +45,7 @@ Output:
 - `rust/target/release/libsudo_awesome_jwt_rust.so`
 
 Notes:
+- The C and Rust implementations are expected to provide the same sudo plugin functionality and accept the same configuration and JWT policy format.
 - Supports `RS256` and `EdDSA` (Ed25519/Ed448) like the C version.
 - Still reads the same `sudo_awesome_jwt.conf` file and uses the same config keys.
 - Symbol exports are restricted via `src/exports.map` and `rust/build.rs`.
@@ -49,20 +57,47 @@ Notes:
 
 ## Install (example)
 
+Install the configuration file:
+
 ```sh
-sudo install -m 0755 sudo_awesome_jwt.so /usr/local/libexec/sudo/
 sudo install -m 0644 sudo_awesome_jwt.conf /usr/local/etc/sudo_awesome_jwt.conf
 ```
 
-Configure sudoers as the policy plugin and add the approval plugin in `/etc/sudo.conf`:
+Install one plugin implementation.
+
+C build:
+
+```sh
+sudo install -m 0755 sudo_awesome_jwt.so /usr/local/libexec/sudo/sudo_awesome_jwt.so
+```
+
+Rust build:
+
+```sh
+sudo install -m 0755 rust/target/release/libsudo_awesome_jwt_rust.so /usr/local/libexec/sudo/sudo_awesome_jwt.so
+```
+
+The sudo.conf examples below use `sudo_awesome_jwt.so` because sudo resolves plugin names from its configured plugin directory. Use a full path only if your installation requires it.
+
+### Approval mode
+
+With the default sudoers policy already active, add `sudo-awesome-jwt` as an approval plugin in `/etc/sudo.conf`:
 
 ```
-Plugin sudoers_policy sudoers.so
 Plugin approval sudo_awesome_jwt.so config=/usr/local/etc/sudo_awesome_jwt.conf
 ```
 
 The approval plugin runs after sudoers. It can only restrict what sudoers already allows.
-The shared object also exports a policy plugin symbol (`policy`) if you want to use JWT as the primary policy plugin instead.
+
+### Policy mode
+
+Use the JWT plugin as the primary policy plugin when the token should replace a standing sudoers command rule:
+
+```
+Plugin policy sudo_awesome_jwt.so config=/usr/local/etc/sudo_awesome_jwt.conf
+```
+
+The shared object exports both `approval` and `policy`; choose one mode in `sudo.conf` for the authorization model you want.
 
 ## Plugin options
 
@@ -72,15 +107,21 @@ Options are passed in `sudo.conf` on the `Plugin` line and apply to both approva
 - `debug` (enable debug logging)
 - `debug=1|0|true|false|yes|no` (explicitly enable/disable debug logging)
 
-Example:
+Approval-mode example:
 
 ```
 Plugin approval sudo_awesome_jwt.so config=/usr/local/etc/sudo_awesome_jwt.conf debug=1
 ```
 
+Policy-mode example:
+
+```
+Plugin policy sudo_awesome_jwt.so config=/usr/local/etc/sudo_awesome_jwt.conf debug=1
+```
+
 ## Config
 
-See `sudo_awesome_jwt.conf` for a minimal example. Required keys:
+See `sudo_awesome_jwt.conf` for an example configuration. Required keys:
 
 - `token_file`
 - `public_key`
@@ -158,16 +199,25 @@ Example JWT payload (claims):
 
 Algorithms supported: `RS256` and `EdDSA`.
 
-## Runtime flow (summary)
+## Runtime flow
 
-1. Jenkins writes a JWT to the configured token file.
-2. sudoers allows the command based on sudoers rules.
-3. The approval plugin validates the token.
-4. If claims match, sudo allows the command.
+Approval mode:
+
+1. The automation system writes a JWT to the configured token file.
+2. sudoers allows the command based on the existing sudoers rule.
+3. The approval plugin validates the JWT claims and command policy.
+4. sudo runs the command only if both sudoers and the JWT approve it.
+
+Policy mode:
+
+1. The automation system writes a JWT to the configured token file.
+2. sudo calls the JWT policy plugin directly.
+3. The policy plugin validates the JWT claims and command policy.
+4. sudo runs the command if the token permits the requested command, runas identity, and environment behavior.
 
 ## Notes
 
 - The token file must not be group/world writable.
 - Token size is capped at 16KB.
 - Clock skew tolerance: 60 seconds.
-- If `require_jwt=false`, missing token allows sudoers to decide; invalid tokens still deny.
+- If `require_jwt=false`, a missing token allows the request to continue. In approval mode, sudoers still decides. In policy mode, the JWT policy plugin allows the request. Invalid tokens still deny.
