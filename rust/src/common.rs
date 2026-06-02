@@ -1083,13 +1083,11 @@ fn command_allowed_by_jwt(state: &State, payload: &Value, command_info: *const *
         } else {
             false
         };
-        if obj.get("setenv").is_some() {
-            if expected_setenv != actual_setenv {
+        if actual_setenv {
+            if !obj.contains_key("setenv") || !expected_setenv {
                 continue;
             }
             entry_score += 1;
-        } else if actual_setenv {
-            continue;
         }
         if entry_score > best_score {
             best_score = entry_score;

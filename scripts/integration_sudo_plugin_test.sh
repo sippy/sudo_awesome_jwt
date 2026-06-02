@@ -1072,6 +1072,54 @@ EOF_ONLY_USER_BYPASS
                 echo "expected sudo -E -u $ALLOW_SETENV_USER to run as uid $ALLOW_SETENV_UID for $plugin_type [$variant_label]" >&2
                 exit 1
             fi
+
+            if ! prepare_jwt_env "$ID_CMD" "$ALLOW_SETENV_USER" "$ALLOW_SETENV_UID" "$ALLOW_SETENV_GID" 1 "$include_ids" "$fake_count" 0; then
+                dump_debug
+                echo "failed to prepare JWT for setenv-permitted user without env ($ALLOW_SETENV_USER) [$variant_label]" >&2
+                exit 1
+            fi
+            write_token "$TTL_SECS"
+            log "running sudo command with SETENV permission but no env request ($ALLOW_SETENV_USER) ($plugin_type) [$variant_label]"
+            setenv_err="$WORKDIR/setenv.stderr"
+            if ! output=$(run_sudo -u "$ALLOW_SETENV_USER" "$ID_CMD" -u 2>"$setenv_err"); then
+                cat "$setenv_err" >&2 || true
+                dump_debug
+                echo "expected sudo -u $ALLOW_SETENV_USER to succeed when setenv is permitted but unused for $plugin_type [$variant_label]" >&2
+                exit 1
+            fi
+            output_trimmed=$(echo "$output" | tr -d '[:space:]')
+            if [[ "$output_trimmed" != "$ALLOW_SETENV_UID" ]]; then
+                cat "$setenv_err" >&2 || true
+                echo "$output" >&2
+                dump_debug
+                echo "expected sudo -u $ALLOW_SETENV_USER to run as uid $ALLOW_SETENV_UID when setenv is permitted but unused for $plugin_type [$variant_label]" >&2
+                exit 1
+            fi
+
+            local unset_preserve_var="SUDO_AWESOME_JWT_UNSET_${TEST_SUFFIX}"
+            unset "$unset_preserve_var" || true
+            if ! prepare_jwt_env "$ID_CMD" "$ALLOW_SETENV_USER" "$ALLOW_SETENV_UID" "$ALLOW_SETENV_GID" 1 "$include_ids" "$fake_count" 0; then
+                dump_debug
+                echo "failed to prepare JWT for setenv-permitted user with unset preserve-env ($ALLOW_SETENV_USER) [$variant_label]" >&2
+                exit 1
+            fi
+            write_token "$TTL_SECS"
+            log "running sudo command with SETENV permission and unset preserve-env ($ALLOW_SETENV_USER) ($plugin_type) [$variant_label]"
+            setenv_err="$WORKDIR/setenv.stderr"
+            if ! output=$(run_sudo --preserve-env="$unset_preserve_var" -u "$ALLOW_SETENV_USER" "$ID_CMD" -u 2>"$setenv_err"); then
+                cat "$setenv_err" >&2 || true
+                dump_debug
+                echo "expected sudo --preserve-env=$unset_preserve_var -u $ALLOW_SETENV_USER to succeed when setenv is permitted for $plugin_type [$variant_label]" >&2
+                exit 1
+            fi
+            output_trimmed=$(echo "$output" | tr -d '[:space:]')
+            if [[ "$output_trimmed" != "$ALLOW_SETENV_UID" ]]; then
+                cat "$setenv_err" >&2 || true
+                echo "$output" >&2
+                dump_debug
+                echo "expected sudo --preserve-env=$unset_preserve_var -u $ALLOW_SETENV_USER to run as uid $ALLOW_SETENV_UID for $plugin_type [$variant_label]" >&2
+                exit 1
+            fi
         done
 
         if command -v "$PRINTENV_CMD" >/dev/null 2>&1; then

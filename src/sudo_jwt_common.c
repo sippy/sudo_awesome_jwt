@@ -1502,12 +1502,13 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
                       expected_setenv);
         }
 
+        int setenv_allowed = have_setenv && expected_setenv;
         if (have_path && path_ok &&
             (!have_runas_user || runas_user_ok || !runas_user_set) &&
             (!have_runas_uid || runas_uid_ok || !runas_uid_set) &&
             (!have_runas_gid || runas_gid_ok || !runas_gid_set) &&
             (!have_runas_group || runas_group_ok) &&
-            ((have_setenv ? expected_setenv : 0) == actual_setenv)) {
+            (!actual_setenv || setenv_allowed)) {
             if (have_runas_user && runas_user_ok) {
                 entry_score++;
             }
@@ -1520,7 +1521,7 @@ static int command_allowed_by_jwt(struct jwt_payload *payload, char * const comm
             if (have_runas_group && runas_group_ok) {
                 entry_score++;
             }
-            if (have_setenv) {
+            if (actual_setenv && setenv_allowed) {
                 entry_score++;
             }
             if (entry_score > best_score) {
