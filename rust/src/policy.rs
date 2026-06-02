@@ -113,10 +113,10 @@ extern "C" fn sudo_jwt_policy_check(
         }
         if !user_env_out.is_null() {
             with_state(|state| {
-                if state.user_env_ptrs.is_none() {
-                    state.user_env_ptrs = Some(vec![0]);
+                if state.command_env_ptrs.is_none() {
+                    state.command_env_ptrs = Some(vec![0]);
                 }
-                if let Some(ref env) = state.user_env_ptrs {
+                if let Some(ref env) = state.command_env_ptrs {
                     *user_env_out = env.as_ptr() as *const *const c_char;
                 }
             });

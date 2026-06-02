@@ -67,6 +67,8 @@ pub(crate) struct State {
     pub(crate) command_info_ptrs: Option<Vec<usize>>,
     pub(crate) user_env: Option<Vec<CString>>,
     pub(crate) user_env_ptrs: Option<Vec<usize>>,
+    pub(crate) command_env: Option<Vec<CString>>,
+    pub(crate) command_env_ptrs: Option<Vec<usize>>,
     pub(crate) run_argv: Option<Vec<CString>>,
     pub(crate) run_argv_ptrs: Option<Vec<usize>>,
     pub(crate) runas_user: Option<String>,
@@ -203,6 +205,8 @@ pub(crate) fn debug_log_approval(msg: &str) {
         state.sudo_printf = sudo_plugin_printf;
         state.user_env = None;
         state.user_env_ptrs = None;
+        state.command_env = None;
+        state.command_env_ptrs = None;
         state.runas_user = None;
         state.runas_uid = None;
         state.runas_gid = None;
@@ -321,6 +325,12 @@ pub(crate) fn debug_log_approval(msg: &str) {
             state.user_env = Some(entries);
             state.user_env_ptrs = Some(ptrs);
         }
+        if state.setenv_requested {
+            if let Some((entries, ptrs)) = build_user_env(user_env) {
+                state.command_env = Some(entries);
+                state.command_env_ptrs = Some(ptrs);
+            }
+        }
 
         match parse_config(&config_path, state.user.as_deref(), state.uid) {
             Ok(cfg) => {
@@ -348,6 +358,8 @@ pub(crate) fn sudo_jwt_close_internal(close_label: &str, log_fn: fn(&State, &str
         state.last_err = None;
         state.user_env = None;
         state.user_env_ptrs = None;
+        state.command_env = None;
+        state.command_env_ptrs = None;
         state.run_argv = None;
         state.run_argv_ptrs = None;
         state.runas_user = None;
@@ -705,7 +717,7 @@ pub(crate) fn merge_env_add(state: &mut State, env_add: *const *const c_char) {
         return;
     }
 
-    let mut entries = state.user_env.take().unwrap_or_default();
+    let mut entries = state.command_env.take().unwrap_or_default();
     entries.retain(|entry| {
         let existing = entry.as_bytes();
         !additions
@@ -716,8 +728,8 @@ pub(crate) fn merge_env_add(state: &mut State, env_add: *const *const c_char) {
 
     let mut ptrs: Vec<usize> = entries.iter().map(|c| c.as_ptr() as usize).collect();
     ptrs.push(0);
-    state.user_env = Some(entries);
-    state.user_env_ptrs = Some(ptrs);
+    state.command_env = Some(entries);
+    state.command_env_ptrs = Some(ptrs);
 }
 
 pub(crate) fn env_add_has_entries(env_add: *const *const c_char) -> bool {

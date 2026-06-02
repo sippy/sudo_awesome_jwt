@@ -13,8 +13,10 @@
 #include "sudo_jwt_policy.h"
 
 static char **g_command_info;
-static char **g_user_env;
-static char **g_user_env_alloc;
+static char **g_source_env;
+static char **g_source_env_alloc;
+static char **g_command_env;
+static char **g_command_env_alloc;
 static char **g_argv_out_alloc;
 static char *g_env_empty[1];
 static char *g_runas_user;
@@ -27,6 +29,7 @@ static int g_runas_uid_set;
 static int g_runas_gid_set;
 static int g_runas_egid_set;
 static int g_runas_user_gid_set;
+static int g_preserve_environment_requested;
 
 static void policy_debug(const char *msg) {
     jwt_common_debug("%s:%s\n", SUDO_AWESOME_JWT_POLICY, msg);
@@ -375,15 +378,15 @@ static char **merge_user_env(char * const base[], char * const env_add[]) {
 }
 
 static void apply_env_add(char *env_add[]) {
-    char **merged = merge_user_env(g_user_env, env_add);
+    char **merged = merge_user_env(g_command_env, env_add);
     if (!merged) {
         return;
     }
-    if (g_user_env_alloc) {
-        free_user_env(g_user_env_alloc);
+    if (g_command_env_alloc) {
+        free_user_env(g_command_env_alloc);
     }
-    g_user_env_alloc = merged;
-    g_user_env = g_user_env_alloc;
+    g_command_env_alloc = merged;
+    g_command_env = g_command_env_alloc;
 }
 
 static char **build_fallback_env(void) {
@@ -487,9 +490,9 @@ static char **build_command_info(char * const argv[], const char *cmd, const cha
 }
 
 static const char *find_env_path(void) {
-    if (g_user_env) {
-        for (size_t i = 0; g_user_env[i]; i++) {
-            const char *entry = g_user_env[i];
+    if (g_source_env) {
+        for (size_t i = 0; g_source_env[i]; i++) {
+            const char *entry = g_source_env[i];
             if (strncmp(entry, "PATH=", 5) == 0 && entry[5] != '\0') {
                 return entry + 5;
             }
@@ -565,6 +568,7 @@ static int policy_open(unsigned int version, sudo_conv_t conversation,
 
     jwt_common_parse_debug_options(plugin_options);
     int setenv_requested = parse_preserve_environment_setting(settings);
+    g_preserve_environment_requested = setenv_requested;
     parse_runas_settings(settings);
     fill_runas_from_user();
     policy_debug("policy_open");
@@ -572,14 +576,20 @@ static int policy_open(unsigned int version, sudo_conv_t conversation,
     if (rc > 0) {
         jwt_common_set_setenv_requested(setenv_requested);
     }
-    g_user_env = NULL;
-    g_user_env_alloc = NULL;
+    g_source_env = NULL;
+    g_source_env_alloc = NULL;
+    g_command_env = NULL;
+    g_command_env_alloc = NULL;
     if (user_env) {
-        g_user_env_alloc = dup_user_env(user_env);
-        g_user_env = g_user_env_alloc ? g_user_env_alloc : (char **)user_env;
+        g_source_env_alloc = dup_user_env(user_env);
+        g_source_env = g_source_env_alloc ? g_source_env_alloc : (char **)user_env;
     } else {
-        g_user_env_alloc = build_fallback_env();
-        g_user_env = g_user_env_alloc;
+        g_source_env_alloc = build_fallback_env();
+        g_source_env = g_source_env_alloc;
+    }
+    if (g_preserve_environment_requested && user_env) {
+        g_command_env_alloc = dup_user_env(user_env);
+        g_command_env = g_command_env_alloc;
     }
     if (rc != 1 && errstr && *errstr) {
         jwt_common_debug("%s:%s\n", SUDO_AWESOME_JWT_POLICY, *errstr);
@@ -593,16 +603,22 @@ static void policy_close(int exit_status, int error) {
     policy_debug("policy_close");
     free_command_info(g_command_info);
     g_command_info = NULL;
-    if (g_user_env_alloc) {
-        free_user_env(g_user_env_alloc);
+    if (g_source_env_alloc) {
+        free_user_env(g_source_env_alloc);
     }
-    g_user_env_alloc = NULL;
-    g_user_env = NULL;
+    g_source_env_alloc = NULL;
+    g_source_env = NULL;
+    if (g_command_env_alloc) {
+        free_user_env(g_command_env_alloc);
+    }
+    g_command_env_alloc = NULL;
+    g_command_env = NULL;
     if (g_argv_out_alloc) {
         free_argv_out(g_argv_out_alloc);
     }
     g_argv_out_alloc = NULL;
     reset_runas();
+    g_preserve_environment_requested = 0;
     g_env_empty[0] = NULL;
     jwt_common_close();
 }
@@ -651,8 +667,8 @@ static int policy_check(int argc, char * const argv[], char *env_add[],
     }
     free(resolved);
     if (user_env_out) {
-        if (g_user_env) {
-            *user_env_out = g_user_env;
+        if (g_command_env) {
+            *user_env_out = g_command_env;
         } else {
             g_env_empty[0] = NULL;
             *user_env_out = g_env_empty;

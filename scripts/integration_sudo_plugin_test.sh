@@ -40,6 +40,7 @@ MISMATCH_RUNAS_GROUP=${SUDO_AWESOME_JWT_TEST_MISMATCH_GROUP:-}
 MISMATCH_RUNAS_GROUP_GID=""
 ID_CMD=$(command -v id || echo "/usr/bin/id")
 PRINTENV_CMD=$(command -v printenv || echo "/usr/bin/printenv")
+SH_CMD=$(command -v sh || echo "/bin/sh")
 SETENV_TEST_VAR=${SUDO_AWESOME_JWT_TEST_ENVVAR:-SUDO_AWESOME_JWT_TEST_SENTINEL}
 SETENV_TEST_VALUE=${SUDO_AWESOME_JWT_TEST_ENVVAL:-"jwt-test-$RANDOM"}
 JWT_SUB=${SUDO_AWESOME_JWT_TEST_SUB:-$("$ID_CMD" -un 2>/dev/null || true)}
@@ -1171,6 +1172,39 @@ EOF_ONLY_USER_BYPASS
                     exit 1
                 fi
             done
+            if command -v "$SH_CMD" >/dev/null 2>&1; then
+                if ! prepare_jwt_env "$SH_CMD" "$ALLOW_SETENV_USER" "$ALLOW_SETENV_UID" "$ALLOW_SETENV_GID" 1 1 0 0; then
+                    dump_debug
+                    echo "failed to prepare JWT for environment sanitization ($ALLOW_SETENV_USER) ($plugin_type)" >&2
+                    exit 1
+                fi
+                write_token "$TTL_SECS"
+                log "running sudo shell with selective preserve-env ($ALLOW_SETENV_USER) ($plugin_type)"
+                setenv_err="$WORKDIR/setenv_sanitize.stderr"
+                if [[ "$INTERACTIVE" == "1" ]]; then
+                    output=$(env BAR=bar FOO=foo sudo --preserve-env=FOO -u "$ALLOW_SETENV_USER" "$SH_CMD" -c 'printf "BAR=%s FOO=%s\n" "${BAR-}" "${FOO-}"' 2>"$setenv_err") || {
+                        cat "$setenv_err" >&2 || true
+                        dump_debug
+                        echo "expected sudo --preserve-env=FOO shell env sanitization command to succeed for $plugin_type" >&2
+                        exit 1
+                    }
+                else
+                    output=$(env BAR=bar FOO=foo sudo -n --preserve-env=FOO -u "$ALLOW_SETENV_USER" "$SH_CMD" -c 'printf "BAR=%s FOO=%s\n" "${BAR-}" "${FOO-}"' 2>"$setenv_err") || {
+                        cat "$setenv_err" >&2 || true
+                        dump_debug
+                        echo "expected sudo --preserve-env=FOO shell env sanitization command to succeed for $plugin_type" >&2
+                        exit 1
+                    }
+                fi
+                output_trimmed=$(echo "$output" | tr -d '\r')
+                if [[ "$output_trimmed" != "BAR= FOO=foo" ]]; then
+                    cat "$setenv_err" >&2 || true
+                    echo "$output" >&2
+                    dump_debug
+                    echo "expected $plugin_type plugin path to preserve FOO but not leak BAR" >&2
+                    exit 1
+                fi
+            fi
         fi
     fi
 
