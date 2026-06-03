@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build_and_test:
-    name: Build & Test
+  build_plugins:
+    name: Build Plugins
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -28,18 +28,69 @@ jobs:
         run: cargo build --release
         working-directory: rust
 
-      - name: Prepare Rust plugin filename
-        run: cp -f rust/target/release/libsudo_awesome_jwt_rust.so rust/target/release/sudo_awesome_jwt_rust.so
+      - name: Stage plugin artifacts
+        run: |
+          mkdir -p ci-artifacts/c ci-artifacts/rust
+          cp -f sudo_awesome_jwt.so ci-artifacts/c/sudo_awesome_jwt.so
+          cp -f rust/target/release/libsudo_awesome_jwt_rust.so ci-artifacts/rust/sudo_awesome_jwt_rust.so
 
-      - name: Integration test (C plugin)
-        run: sudo /usr/bin/env SUDO_AWESOME_JWT_TEST_TTL=1 SUDO_AWESOME_JWT_TEST_WAIT=65 SUDO_AWESOME_JWT_DEBUG=1 scripts/integration_sudo_plugin_test.sh
+      - name: Upload plugin artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: sudo-awesome-jwt-plugins
+          path: ci-artifacts
+          if-no-files-found: error
 
-      - name: Integration test (Rust plugin)
-        run: sudo /usr/bin/env SUDO_AWESOME_JWT_PLUGIN_LIB="$PWD/rust/target/release/sudo_awesome_jwt_rust.so" SUDO_AWESOME_JWT_TEST_TTL=1 SUDO_AWESOME_JWT_TEST_WAIT=65 SUDO_AWESOME_JWT_DEBUG=1 scripts/integration_sudo_plugin_test.sh
+  integration_tests:
+    name: Integration (${{ matrix.impl }}, ${{ matrix.mode }})
+    needs: [build_plugins]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - impl: C
+            mode: approval
+            plugin: ci-artifacts/c/sudo_awesome_jwt.so
+          - impl: C
+            mode: policy
+            plugin: ci-artifacts/c/sudo_awesome_jwt.so
+          - impl: Rust
+            mode: approval
+            plugin: ci-artifacts/rust/sudo_awesome_jwt_rust.so
+          - impl: Rust
+            mode: policy
+            plugin: ci-artifacts/rust/sudo_awesome_jwt_rust.so
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev openssl python3 sudo
+
+      - name: Download plugin artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: sudo-awesome-jwt-plugins
+          path: ci-artifacts
+
+      - name: Integration test
+        run: |
+          chmod 0755 "${{ matrix.plugin }}"
+          sudo /usr/bin/env \
+            SUDO_AWESOME_JWT_PLUGIN_LIB="$PWD/${{ matrix.plugin }}" \
+            SUDO_AWESOME_JWT_TEST_PLUGIN_TYPE="${{ matrix.mode }}" \
+            SUDO_AWESOME_JWT_TEST_SKIP_BUILD=1 \
+            SUDO_AWESOME_JWT_TEST_TTL=1 \
+            SUDO_AWESOME_JWT_TEST_WAIT=65 \
+            SUDO_AWESOME_JWT_DEBUG=1 \
+            scripts/integration_sudo_plugin_test.sh
 
   roll_release:
     name: Roll Release
-    needs: [build_and_test]
+    needs: [integration_tests]
     permissions:
       contents: write
     uses: sippy/cimagic/.github/workflows/RollReleaseDraft.yml@v2

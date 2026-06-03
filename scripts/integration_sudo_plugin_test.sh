@@ -16,6 +16,8 @@ PLUGIN_DEBUG_LOG="$WORKDIR/sudo_plugin_debug.log"
 
 PLUGIN_LIB=${SUDO_AWESOME_JWT_PLUGIN_LIB:-"$ROOT_DIR/sudo_awesome_jwt.so"}
 PLUGIN_BASENAME=$(basename "$PLUGIN_LIB")
+TEST_PLUGIN_TYPE=${SUDO_AWESOME_JWT_TEST_PLUGIN_TYPE:-all}
+SKIP_BUILD=${SUDO_AWESOME_JWT_TEST_SKIP_BUILD:-0}
 TEST_COMMANDS=()
 WAIT_SECS=${SUDO_AWESOME_JWT_TEST_WAIT:-70}
 TTL_SECS=${SUDO_AWESOME_JWT_TEST_TTL:-5}
@@ -528,7 +530,20 @@ if [[ "$DEBUG" == "1" ]]; then
     DEBUG_OPT=" debug=1"
 fi
 
+case "$TEST_PLUGIN_TYPE" in
+    all|approval|policy)
+        ;;
+    *)
+        echo "invalid SUDO_AWESOME_JWT_TEST_PLUGIN_TYPE: $TEST_PLUGIN_TYPE" >&2
+        exit 1
+        ;;
+esac
+
 if [[ ! -f "$PLUGIN_LIB" ]]; then
+    if [[ "$SKIP_BUILD" == "1" || "$SKIP_BUILD" == "true" ]]; then
+        echo "plugin library not found and build is disabled: $PLUGIN_LIB" >&2
+        exit 1
+    fi
     log "plugin not found, building it"
     if [[ "$PLUGIN_LIB" == *"sudo_awesome_jwt_rust.so"* ]]; then
         (cd "$ROOT_DIR/rust" && cargo build --release)
@@ -1255,7 +1270,14 @@ EOF_ONLY_USER_BYPASS
     fi
 }
 
-run_once approval
-run_once policy
+case "$TEST_PLUGIN_TYPE" in
+    all)
+        run_once approval
+        run_once policy
+        ;;
+    approval|policy)
+        run_once "$TEST_PLUGIN_TYPE"
+        ;;
+esac
 
 log "all plugin tests passed"
