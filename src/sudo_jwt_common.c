@@ -625,6 +625,10 @@ static int should_enforce_for_user(void) {
     return 1;
 }
 
+int jwt_common_should_enforce_for_user(void) {
+    return should_enforce_for_user();
+}
+
 static const char *get_command_path(char * const run_argv[], char * const command_info[]) {
     if (command_info) {
         const char *cmd = get_kv(command_info, "command_path");

@@ -1005,6 +1005,24 @@ EOF_ONLY_USER_BYPASS
         fi
 
         if command -v "$PRINTENV_CMD" >/dev/null 2>&1; then
+            local term_value="xterm"
+            log "running sudo command with inherited TERM and non-matching only_user (policy)"
+            term_err="$WORKDIR/term_only_user.stderr"
+            if ! output=$(TERM="$term_value" run_sudo -u root "$PRINTENV_CMD" TERM 2>"$term_err"); then
+                cat "$term_err" >&2 || true
+                dump_debug
+                echo "expected sudo printenv TERM to succeed when only_user does not match for policy" >&2
+                exit 1
+            fi
+            output_trimmed=$(echo "$output" | tr -d '[:space:]')
+            if [[ "$output_trimmed" != "$term_value" ]]; then
+                cat "$term_err" >&2 || true
+                echo "$output" >&2
+                dump_debug
+                echo "expected sudo printenv TERM to preserve inherited TERM when only_user does not match for policy" >&2
+                exit 1
+            fi
+
             local track_value="unstable/new"
             log "running sudo command with env assignment and non-matching only_user (policy)"
             env_add_err="$WORKDIR/env_add_only_user.stderr"

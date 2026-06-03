@@ -736,6 +736,17 @@ pub(crate) fn env_add_has_entries(env_add: *const *const c_char) -> bool {
     unsafe { !env_add.is_null() && !(*env_add).is_null() }
 }
 
+pub(crate) fn set_command_env_from_source(state: &mut State) {
+    let Some(source) = state.user_env.as_ref() else {
+        return;
+    };
+    let entries = source.clone();
+    let mut ptrs: Vec<usize> = entries.iter().map(|c| c.as_ptr() as usize).collect();
+    ptrs.push(0);
+    state.command_env = Some(entries);
+    state.command_env_ptrs = Some(ptrs);
+}
+
 fn build_fallback_env() -> Option<(Vec<CString>, Vec<usize>)> {
     let path = std::env::var("PATH").ok()?;
     let entry = CString::new(format!("PATH={path}")).ok()?;
@@ -936,7 +947,7 @@ fn read_token(path: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn should_enforce_user(state: &State, cfg: &Config) -> bool {
+pub(crate) fn should_enforce_user(state: &State, cfg: &Config) -> bool {
     if let Some(ref only_user) = cfg.only_user {
         if state.user.as_deref() != Some(only_user.as_str()) {
             return false;

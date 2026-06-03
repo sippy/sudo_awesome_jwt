@@ -50,6 +50,14 @@ extern "C" fn sudo_jwt_policy_check(
     debug_log_policy("policy_check");
     unsafe {
         with_state(|state| {
+            let enforce = state
+                .config
+                .as_ref()
+                .map(|cfg| should_enforce_user(state, cfg))
+                .unwrap_or(true);
+            if !enforce {
+                set_command_env_from_source(state);
+            }
             if env_add_has_entries(env_add) {
                 state.setenv_requested = true;
             }
