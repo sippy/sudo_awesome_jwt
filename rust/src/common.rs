@@ -6,7 +6,6 @@ use openssl::hash::MessageDigest;
 use serde_json::Value;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_uint};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -616,13 +615,12 @@ pub(crate) fn resolve_command_path(cmd: &str, user_env: Option<&[CString]>) -> O
             continue;
         }
         let candidate = PathBuf::from(dir).join(cmd);
-        let bytes = candidate.as_os_str().as_bytes();
-        if bytes.is_empty() || bytes.contains(&0) {
-            continue;
-        }
-        if let Ok(cstr) = CString::new(bytes) {
-            let rc = unsafe { libc::access(cstr.as_ptr(), libc::X_OK) };
-            if rc == 0 {
+        // Policy checks happen before sudo assumes the run-as credentials.
+        // access(2) uses the invoking user's real ID here, which incorrectly
+        // rejects commands that are executable by root (or another run-as
+        // user).  This mirrors sudoers' sudo_goodpath() check instead.
+        if let Ok(metadata) = std::fs::metadata(&candidate) {
+            if metadata.is_file() && metadata.mode() & 0o111 != 0 {
                 return Some(candidate.to_string_lossy().into_owned());
             }
         }

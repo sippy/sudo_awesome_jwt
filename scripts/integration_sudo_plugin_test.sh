@@ -13,6 +13,8 @@ KEY_PRIV="$WORKDIR/jwt.key"
 KEY_PUB="$WORKDIR/jwt.pub"
 SUDO_DEBUG_LOG="$WORKDIR/sudo_debug.log"
 PLUGIN_DEBUG_LOG="$WORKDIR/sudo_plugin_debug.log"
+RESTRICTED_CMD="$WORKDIR/restricted-command"
+SUDOERS_TEST_RULE=""
 
 PLUGIN_LIB=${SUDO_AWESOME_JWT_PLUGIN_LIB:-"$ROOT_DIR/sudo_awesome_jwt.so"}
 PLUGIN_BASENAME=$(basename "$PLUGIN_LIB")
@@ -454,7 +456,36 @@ cleanup_multigroup_user() {
     MULTIGROUP_CREATED=0
 }
 
+remove_restricted_sudoers_rule() {
+    if [[ -n "$SUDOERS_TEST_RULE" ]]; then
+        rm -f "$SUDOERS_TEST_RULE"
+        SUDOERS_TEST_RULE=""
+    fi
+}
+
+install_restricted_sudoers_rule() {
+    local sudoers_dir=""
+    for candidate in /etc/sudoers.d /usr/local/etc/sudoers.d; do
+        if [[ -d "$candidate" ]]; then
+            sudoers_dir="$candidate"
+            break
+        fi
+    done
+    if [[ -z "$sudoers_dir" ]]; then
+        return 1
+    fi
+
+    SUDOERS_TEST_RULE="$sudoers_dir/sudo-awesome-jwt-${TEST_SUFFIX}"
+    printf '%s ALL=(root) NOPASSWD: %s\n' "$MULTIGROUP_USER" "$RESTRICTED_CMD" > "$SUDOERS_TEST_RULE"
+    chmod 0440 "$SUDOERS_TEST_RULE"
+    if command -v visudo >/dev/null 2>&1 && ! visudo -cf "$SUDOERS_TEST_RULE" >/dev/null; then
+        remove_restricted_sudoers_rule
+        return 1
+    fi
+}
+
 cleanup() {
+    remove_restricted_sudoers_rule
     cleanup_multigroup_user
     if [[ -f "$SUDO_CONF_BACKUP" ]]; then
         run_privileged cp "$SUDO_CONF_BACKUP" "$SUDO_CONF"
@@ -805,6 +836,71 @@ run_once() {
             fi
         done
     done
+
+    if [[ -n "$MULTIGROUP_USER" ]]; then
+        printf '#!/bin/sh\necho restricted-command-ok\n' > "$RESTRICTED_CMD"
+        chmod 0100 "$RESTRICTED_CMD"
+        chmod 0711 "$WORKDIR"
+
+        if command -v runuser >/dev/null 2>&1 || command -v su >/dev/null 2>&1; then
+            if [[ "$plugin_type" == "approval" ]] && ! install_restricted_sudoers_rule; then
+                echo "unable to install the temporary sudoers rule for the restricted executable approval test" >&2
+                exit 1
+            fi
+            local saved_jwt_sub="$JWT_SUB"
+            JWT_SUB="$MULTIGROUP_USER"
+            if ! prepare_jwt_env "$RESTRICTED_CMD" "root" "$ROOT_UID" "$ROOT_GID" 0 1 0; then
+                JWT_SUB="$saved_jwt_sub"
+                dump_debug
+                echo "failed to prepare JWT for restricted executable $plugin_type test" >&2
+                exit 1
+            fi
+            write_token "$TTL_SECS"
+            local restricted_invocation="${RESTRICTED_CMD##*/}"
+            if [[ "$plugin_type" == "approval" ]]; then
+                # The sudoers policy resolves commands before an approval
+                # plugin is called.  Some sudoers versions reject a PATH
+                # candidate the invoking user cannot execute, leaving no
+                # approval callback that could repair it.  Use the absolute
+                # path here to test approval of the restricted executable;
+                # policy mode separately tests basename/PATH resolution.
+                restricted_invocation="$RESTRICTED_CMD"
+                log "running restricted executable by absolute path (approval)"
+            else
+                log "running PATH command executable by root but not the invoking user (policy)"
+            fi
+            local restricted_path="$WORKDIR:/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin"
+            local sudo_cmd
+            sudo_cmd=$(command -v sudo)
+            if command -v runuser >/dev/null 2>&1; then
+                output=$(runuser -u "$MULTIGROUP_USER" -- env PATH="$restricted_path" "$sudo_cmd" -n "$restricted_invocation" 2>&1) || {
+                    JWT_SUB="$saved_jwt_sub"
+                    echo "$output" >&2
+                    dump_debug
+                    echo "expected restricted executable to run through the $plugin_type plugin" >&2
+                    exit 1
+                }
+            else
+                output=$(su -m "$MULTIGROUP_USER" -c "env PATH=$restricted_path $sudo_cmd -n $restricted_invocation" 2>&1) || {
+                    JWT_SUB="$saved_jwt_sub"
+                    echo "$output" >&2
+                    dump_debug
+                    echo "expected restricted executable to run through the $plugin_type plugin" >&2
+                    exit 1
+                }
+            fi
+            JWT_SUB="$saved_jwt_sub"
+            remove_restricted_sudoers_rule
+            if [[ "$output" != *"restricted-command-ok"* ]]; then
+                echo "$output" >&2
+                dump_debug
+                echo "restricted executable did not produce the expected output" >&2
+                exit 1
+            fi
+        else
+            log "skipping restricted executable $plugin_type test: neither runuser nor su is available"
+        fi
+    fi
 
     local deny_token="$WORKDIR/token.${plugin_type}.deny"
     if [[ -n "$DENY_CMD" && -n "$DENY_CMD_RESOLVED" ]]; then

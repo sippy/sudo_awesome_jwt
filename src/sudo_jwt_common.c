@@ -668,7 +668,9 @@ static char *resolve_path_from_env(const char *cmd) {
         if (len > 0) {
             char candidate[PATH_MAX];
             if (snprintf(candidate, sizeof(candidate), "%.*s/%s", (int)len, cur, cmd) < (int)sizeof(candidate)) {
-                if (access(candidate, X_OK) == 0) {
+                struct stat sb;
+                if (stat(candidate, &sb) == 0 && S_ISREG(sb.st_mode) &&
+                    (sb.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0) {
                     return xstrdup(candidate);
                 }
             }

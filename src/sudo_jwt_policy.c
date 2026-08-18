@@ -1,5 +1,6 @@
 #include <pwd.h>
 #include <grp.h>
+#include <sys/stat.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -531,7 +532,17 @@ static char *resolve_command_path(const char *cmd) {
         if (len > 0) {
             char candidate[PATH_MAX];
             if (snprintf(candidate, sizeof(candidate), "%.*s/%s", (int)len, cur, cmd) < (int)sizeof(candidate)) {
-                if (access(candidate, X_OK) == 0) {
+                struct stat sb;
+                /*
+                 * The policy plugin runs before sudo assumes the run-as
+                 * credentials.  access(2) therefore tests the invoking
+                 * user's real ID and can hide a command that root is able
+                 * to execute.  Match sudoers' sudo_goodpath() semantics:
+                 * accept regular files with at least one execute bit and
+                 * let sudo perform the final exec as the run-as user.
+                 */
+                if (stat(candidate, &sb) == 0 && S_ISREG(sb.st_mode) &&
+                    (sb.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0) {
                     return strdup(candidate);
                 }
             }
