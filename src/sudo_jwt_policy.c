@@ -390,18 +390,6 @@ static void apply_env_add(char *env_add[]) {
     g_command_env = g_command_env_alloc;
 }
 
-static void set_command_env_from_source(void) {
-    char **env = dup_user_env(g_source_env);
-    if (!env) {
-        return;
-    }
-    if (g_command_env_alloc) {
-        free_user_env(g_command_env_alloc);
-    }
-    g_command_env_alloc = env;
-    g_command_env = g_command_env_alloc;
-}
-
 static char **build_fallback_env(void) {
     const char *path = getenv("PATH");
     if (!path) {
@@ -656,9 +644,6 @@ static int policy_check(int argc, char * const argv[], char *env_add[],
     (void)argc;
 
     policy_debug("policy_check");
-    if (!jwt_common_should_enforce_for_user()) {
-        set_command_env_from_source();
-    }
     if (env_add_has_entries(env_add)) {
         jwt_common_set_setenv_requested(1);
     }

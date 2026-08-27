@@ -28,6 +28,5 @@ void jwt_common_parse_debug_options(char * const plugin_options[]);
 void jwt_common_debug(const char *fmt, ...);
 void jwt_common_set_setenv_requested(int val);
 void jwt_common_set_run_envp(char * const envp[]);
-int jwt_common_should_enforce_for_user(void);
 
 #endif

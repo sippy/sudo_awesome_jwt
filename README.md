@@ -135,8 +135,8 @@ Optional:
 - `max_ttl` (default: 300 seconds)
 - `require_tty` (default: false)
 - `require_jwt` (default: true)
-- `only_user` (if set, enforce JWT only for this user)
-- `only_uid` (if set, enforce JWT only for this uid)
+- `only_user` (if set, apply the JWT check only to this user in approval mode; deny other users in policy mode)
+- `only_uid` (if set, apply the JWT check only to this uid in approval mode; deny other uids in policy mode)
 - `${user}` and `${uid}` are expanded in config values. Single-quote a value to disable expansion.
 - `audience` may be a quoted string or an absolute path to a file containing the audience value
 
@@ -221,3 +221,4 @@ Policy mode:
 - Token size is capped at 16KB.
 - Clock skew tolerance: 60 seconds.
 - If `require_jwt=false`, a missing token allows the request to continue. In approval mode, sudoers still decides. In policy mode, the JWT policy plugin allows the request. Invalid tokens still deny.
+- A non-matching `only_user` or `only_uid` passes through to sudoers in approval mode and is denied in policy mode.

@@ -614,7 +614,7 @@ static int should_enforce_for_user(void) {
         return 0;
     }
 
-    if (g_cfg->only_user && g_user && strcmp(g_cfg->only_user, g_user) != 0) {
+    if (g_cfg->only_user && (!g_user || strcmp(g_cfg->only_user, g_user) != 0)) {
         return 0;
     }
 
@@ -623,10 +623,6 @@ static int should_enforce_for_user(void) {
     }
 
     return 1;
-}
-
-int jwt_common_should_enforce_for_user(void) {
-    return should_enforce_for_user();
 }
 
 static const char *get_command_path(char * const run_argv[], char * const command_info[]) {
@@ -1657,6 +1653,7 @@ int jwt_common_check(char * const command_info[], char * const run_argv[],
     int ok = 0;
     const char *tmp_err = NULL;
     const char **err_out = errstr ? errstr : &tmp_err;
+    int policy_mode = (log_prefix && strcmp(log_prefix, SUDO_AWESOME_JWT_POLICY) == 0);
 
     if (!g_cfg) {
         *err_out = "policy not initialized";
@@ -1665,6 +1662,10 @@ int jwt_common_check(char * const command_info[], char * const run_argv[],
     }
 
     if (!should_enforce_for_user()) {
+        if (policy_mode) {
+            *err_out = "invoking user is not permitted by JWT policy";
+            return 0;
+        }
         return 1;
     }
 
@@ -1696,7 +1697,6 @@ int jwt_common_check(char * const command_info[], char * const run_argv[],
         goto cleanup;
     }
 
-    int policy_mode = (log_prefix && strcmp(log_prefix, SUDO_AWESOME_JWT_POLICY) == 0);
     if (!command_allowed_by_jwt(payload, command_info, run_argv, policy_mode, err_out)) {
         goto cleanup;
     }
