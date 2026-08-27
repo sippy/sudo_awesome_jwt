@@ -1091,66 +1091,57 @@ run_once() {
         fi
     fi
 
-    if [[ "$plugin_type" == "policy" && -n "$RUNAS_USER" && -n "$RUNAS_UID" && -n "$RUNAS_GROUP" && -n "$RUNAS_GROUP_GID" ]]; then
-        local config_saved="$WORKDIR/config.before_only_user_bypass"
+    if [[ "$plugin_type" == "policy" ]]; then
+        local config_saved="$WORKDIR/config.before_identity_mismatch"
         cp "$CONFIG_FILE" "$config_saved"
-        cat >> "$CONFIG_FILE" <<'EOF_ONLY_USER_BYPASS'
+        cat >> "$CONFIG_FILE" <<'EOF_ONLY_USER_MISMATCH'
 only_user = "__sudo_awesome_jwt_unmatched_user__"
-EOF_ONLY_USER_BYPASS
+EOF_ONLY_USER_MISMATCH
         rm -f "$TOKEN_FILE"
 
-        log "running sudo command with runas user/group and non-matching only_user (policy)"
-        user_group_err="$WORKDIR/runas_user_group_only_user.stderr"
-        if ! output=$(run_sudo -u "$RUNAS_USER" -g "$RUNAS_GROUP" "$ID_CMD" 2>"$user_group_err"); then
-            cat "$user_group_err" >&2 || true
-            dump_debug
-            echo "expected sudo -u $RUNAS_USER -g $RUNAS_GROUP to succeed when only_user does not match for policy" >&2
-            exit 1
-        fi
-        if [[ "$output" != *"gid=$RUNAS_GROUP_GID"* && "$output" != *"egid=$RUNAS_GROUP_GID"* ]]; then
-            cat "$user_group_err" >&2 || true
+        log "running sudo command with non-matching only_user (policy)"
+        local identity_err="$WORKDIR/only_user_mismatch.stderr"
+        if output=$(run_sudo "$ID_CMD" 2>"$identity_err"); then
+            cat "$identity_err" >&2 || true
             echo "$output" >&2
             dump_debug
-            echo "expected sudo -u $RUNAS_USER -g $RUNAS_GROUP to run with gid or egid $RUNAS_GROUP_GID when only_user does not match for policy" >&2
+            echo "expected sudo to fail when only_user does not match for policy" >&2
             exit 1
         fi
 
-        if command -v "$PRINTENV_CMD" >/dev/null 2>&1; then
-            local term_value="xterm"
-            log "running sudo command with inherited TERM and non-matching only_user (policy)"
-            term_err="$WORKDIR/term_only_user.stderr"
-            if ! output=$(TERM="$term_value" run_sudo -u root "$PRINTENV_CMD" TERM 2>"$term_err"); then
-                cat "$term_err" >&2 || true
-                dump_debug
-                echo "expected sudo printenv TERM to succeed when only_user does not match for policy" >&2
-                exit 1
-            fi
-            output_trimmed=$(echo "$output" | tr -d '[:space:]')
-            if [[ "$output_trimmed" != "$term_value" ]]; then
-                cat "$term_err" >&2 || true
-                echo "$output" >&2
-                dump_debug
-                echo "expected sudo printenv TERM to preserve inherited TERM when only_user does not match for policy" >&2
-                exit 1
-            fi
+        cp "$config_saved" "$CONFIG_FILE"
+        cat >> "$CONFIG_FILE" <<'EOF_ONLY_UID_MISMATCH'
+only_uid = 2147483647
+EOF_ONLY_UID_MISMATCH
 
-            local track_value="unstable/new"
-            log "running sudo command with env assignment and non-matching only_user (policy)"
-            env_add_err="$WORKDIR/env_add_only_user.stderr"
-            if ! output=$(run_sudo -u root "TRACK=$track_value" "$PRINTENV_CMD" TRACK 2>"$env_add_err"); then
-                cat "$env_add_err" >&2 || true
-                dump_debug
-                echo "expected sudo TRACK=$track_value printenv TRACK to succeed when only_user does not match for policy" >&2
-                exit 1
-            fi
-            output_trimmed=$(echo "$output" | tr -d '[:space:]')
-            if [[ "$output_trimmed" != "$track_value" ]]; then
-                cat "$env_add_err" >&2 || true
-                echo "$output" >&2
-                dump_debug
-                echo "expected sudo TRACK=$track_value printenv TRACK to preserve env assignment when only_user does not match for policy" >&2
-                exit 1
-            fi
+        log "running sudo command with non-matching only_uid (policy)"
+        identity_err="$WORKDIR/only_uid_mismatch.stderr"
+        if output=$(run_sudo "$ID_CMD" 2>"$identity_err"); then
+            cat "$identity_err" >&2 || true
+            echo "$output" >&2
+            dump_debug
+            echo "expected sudo to fail when only_uid does not match for policy" >&2
+            exit 1
+        fi
+
+        cp "$config_saved" "$CONFIG_FILE"
+    fi
+
+    if [[ "$plugin_type" == "approval" ]]; then
+        local config_saved="$WORKDIR/config.before_approval_identity_mismatch"
+        cp "$CONFIG_FILE" "$config_saved"
+        cat >> "$CONFIG_FILE" <<'EOF_APPROVAL_ONLY_UID_MISMATCH'
+only_uid = 2147483647
+EOF_APPROVAL_ONLY_UID_MISMATCH
+        rm -f "$TOKEN_FILE"
+
+        log "running sudo command with non-matching only_uid (approval)"
+        local identity_err="$WORKDIR/approval_only_uid_mismatch.stderr"
+        if ! output=$(run_sudo "$ID_CMD" 2>"$identity_err"); then
+            cat "$identity_err" >&2 || true
+            dump_debug
+            echo "expected sudoers to decide when only_uid does not match for approval" >&2
+            exit 1
         fi
 
         cp "$config_saved" "$CONFIG_FILE"
